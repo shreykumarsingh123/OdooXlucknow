@@ -1,3 +1,4 @@
+#please try running this code it was impossible to describe a full fledge near production code in just 10 minutes in a video 
 # Brightloop
 
 Brightloop is a subscription management platform for many businesses. Each business runs its own plans, billing, payments, support and sales here, and Brightloop tracks the subscriptions made on their sites.
@@ -6,6 +7,7 @@ Brightloop is a subscription management platform for many businesses. Each busin
 - Requirements and assumptions: [docs/ANALYSIS.md](docs/ANALYSIS.md)
 - Design: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), [docs/DECISIONS.md](docs/DECISIONS.md)
 - Plan and status: [PLAN.md](PLAN.md)
+- each account have same common password Brightloop@123
 
 ## Tech stack
 
