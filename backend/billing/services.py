@@ -50,6 +50,11 @@ def next_period_start(day, period, anchor=None):
 # ---------------------------------------------------------------- subscription building
 
 
+def _in_business(rows, business_id):
+    """The nightly job passes no business and covers all of them. A person's button only ever covers their own."""
+    return rows.filter(business_id=business_id) if business_id else rows
+
+
 def log_event(subscription_id, message, actor=None):
     SubscriptionEvent.objects.create(subscription_id=subscription_id, message=message[:255], actor=actor)
 
@@ -116,7 +121,7 @@ def save_subscription(data, rows, instance=None):
         quantity = sum(row["quantity"] for row in rows)
     validate_terms(plan, start, expiry, quantity)
     if instance is None:
-        instance = Subscription.objects.create(**data)
+        instance = Subscription.objects.create(business_id=plan.business_id, **data)
         instance.number = f"SUB-{instance.pk:06d}"
         instance.save(update_fields=["number"])
     else:
@@ -191,13 +196,13 @@ def activate(subscription_id):
     return sub
 
 
-def _provision(customer, plan, actor, message, bill=True):
+def provision(customer, plan, actor, message, bill=True):
     """Create a running subscription for one plan, with its first invoice ready to pay unless a trial applies."""
-    term = PaymentTerm.objects.filter(is_active=True).first()
+    term = PaymentTerm.objects.filter(business_id=plan.business_id, is_active=True).first()
     if term is None:
         raise Conflict("Add a payment term first.")
     today = timezone.localdate()
-    sub = Subscription.objects.create(customer=customer, plan=plan, payment_term=term, start_date=today, expiry_date=add_months(today, 12))
+    sub = Subscription.objects.create(business_id=plan.business_id, customer=customer, plan=plan, payment_term=term, start_date=today, expiry_date=add_months(today, 12))
     sub.number = f"SUB-{sub.pk:06d}"
     sub.save(update_fields=["number"])
     write_lines(sub, [])
@@ -225,16 +230,16 @@ def _start_billing(sub):
 
 
 @transaction.atomic
-def start_plan(user, plan_id):
+def start_plan(user, plan_id, business_id):
     """A customer starts a public plan online. The team's quotation steps do not apply (assumption A-12)."""
     today = timezone.localdate()
-    plan = Plan.objects.filter(pk=plan_id, is_public=True).first()
+    plan = Plan.objects.filter(pk=plan_id, is_public=True, business_id=business_id).first() if str(plan_id).isdigit() else None
     if plan is None or not plan.available_on(today) or plan.min_quantity > 1 or plan.price <= 0:
         raise Conflict("This plan cannot be started online. Please contact Brightloop.")
     type(user).objects.select_for_update().get(pk=user.pk)  # one at a time per customer, so a double click makes one
     if Subscription.objects.filter(customer=user, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
         raise Conflict("You already have this plan.")
-    return _provision(user, plan, user, "Started online")
+    return provision(user, plan, user, "Started online")
 
 
 @transaction.atomic
@@ -255,7 +260,7 @@ def assign_plan(customer, plan, actor, replace=None):
         log_event(old.pk, f"Closed by the admin: replaced by the {plan.name} plan", actor)
     if Subscription.objects.filter(customer=customer, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
         raise Conflict("This customer already has that plan.")
-    return _provision(customer, plan, actor, "Plan assigned by the admin")
+    return provision(customer, plan, actor, "Plan assigned by the admin")
 
 
 @transaction.atomic
@@ -326,10 +331,12 @@ def set_auto_renew(subscription_id, enabled, actor=None):
     return sub
 
 
-def renew_due(today=None):
+def renew_due(today=None, business_id=None):
     """Subscriptions past expiry roll over by themselves, unless the customer opted out."""
     today = today or timezone.localdate()
-    due = Subscription.objects.filter(state=S.ACTIVE, auto_renew=True, plan__renewable=True, plan__auto_close=False, expiry_date__lt=today)
+    due = _in_business(
+        Subscription.objects.filter(state=S.ACTIVE, auto_renew=True, plan__renewable=True, plan__auto_close=False, expiry_date__lt=today), business_id
+    )
     renewed = 0
     for pk in list(due.values_list("pk", flat=True)):
         with transaction.atomic():
@@ -429,7 +436,7 @@ def _adjustment_invoice(sub, description, subtotal, tax, today):
     last = sub.next_invoice_date - timedelta(days=1) if sub.next_invoice_date else today
     customer = sub.customer
     invoice = Invoice.objects.create(
-        subscription=sub, customer=customer, customer_name=customer.display_name, customer_email=customer.email,
+        business_id=sub.business_id, subscription=sub, customer=customer, customer_name=customer.display_name, customer_email=customer.email,
         customer_address=customer.address, state=I.CONFIRMED, invoice_date=today,
         due_date=today + timedelta(days=sub.payment_term.due_days), period_start=today, period_end=max(last, today),
         billing_key=f"adj:{uuid.uuid4().hex[:32]}", subtotal=subtotal, tax_total=tax, total=subtotal + tax, is_adjustment=True,
@@ -461,7 +468,7 @@ def adjust_balance(subscription_id, kind, amount, note, actor):
 def redeem_code(subscription_id, code, actor=None):
     sub = _locked(subscription_id)
     _require(sub, S.ACTIVE, S.PAUSED)
-    discount = Discount.objects.select_for_update().filter(code__iexact=str(code).strip()).first() if str(code).strip() else None
+    discount = Discount.objects.select_for_update().filter(business_id=sub.business_id, code__iexact=str(code).strip()).first() if str(code).strip() else None
     if discount is None or not discount.is_live():
         raise ValidationError({"code": ["This code is not valid, or has expired."]})
     if discount.subscriptions.filter(pk=sub.pk).exists():
@@ -490,10 +497,10 @@ def redeem_code(subscription_id, code, actor=None):
     return sub
 
 
-def close_ended(today=None):
+def close_ended(today=None, business_id=None):
     """Close subscriptions whose plan closes on its own, once they have ended."""
     today = today or timezone.localdate()
-    ended = Subscription.objects.filter(state__in=[S.ACTIVE, S.PAUSED]).filter(
+    ended = _in_business(Subscription.objects.filter(state__in=[S.ACTIVE, S.PAUSED]), business_id).filter(
         Q(plan__auto_close=True, expiry_date__lt=today) | Q(plan__auto_close=True, plan__end_date__lt=today) | Q(auto_renew=False, expiry_date__lt=today)
     )
     ids = list(ended.values_list("pk", flat=True))
@@ -509,7 +516,7 @@ def _qualifies(discount, purchase, quantity):
 
 
 def _applicable_discounts(sub, day):
-    live = Discount.objects.select_for_update().filter(reward=Discount.Reward.DISCOUNT, is_active=True, start_date__lte=day).filter(
+    live = Discount.objects.select_for_update().filter(business_id=sub.business_id, reward=Discount.Reward.DISCOUNT, is_active=True, start_date__lte=day).filter(
         Q(end_date__isnull=True) | Q(end_date__gte=day)
     ).filter(Q(usage_limit__isnull=True) | Q(times_used__lt=F("usage_limit")))
     product_ids = [line.product_id for line in sub.lines.all() if line.product_id]
@@ -584,6 +591,7 @@ def _create_invoice(sub, period_start, day):
         sub.credit_balance -= credit
         sub.save(update_fields=["credit_balance"])
     invoice = Invoice.objects.create(
+        business_id=sub.business_id,
         subscription=sub,
         customer=customer,
         customer_name=customer.display_name,
@@ -645,11 +653,11 @@ def bill_subscription(subscription_id, today=None):
     return created
 
 
-def run_billing(today=None):
+def run_billing(today=None, business_id=None):
     """Bill everything due. Each subscription has its own transaction, so one failure cannot block the rest."""
     today = today or timezone.localdate()
-    renewed = renew_due(today)
-    due = Subscription.objects.filter(state=S.ACTIVE, next_invoice_date__lte=today).values_list("pk", flat=True)
+    renewed = renew_due(today, business_id)
+    due = _in_business(Subscription.objects.filter(state=S.ACTIVE, next_invoice_date__lte=today), business_id).values_list("pk", flat=True)
     created, failed = 0, []
     for pk in list(due):
         try:
@@ -660,7 +668,7 @@ def run_billing(today=None):
             logger.exception("Billing failed for subscription %s", pk)
             failed.append({"subscription": pk, "error": str(exc)})
     # Closed last, so that a subscription's final periods are billed first and nothing is skipped.
-    closed = close_ended(today)
+    closed = close_ended(today, business_id)
     return {"invoices_created": created, "subscriptions_closed": closed, "subscriptions_renewed": renewed, "failed": failed}
 
 
@@ -729,7 +737,7 @@ def record_payment(invoice_id, method, amount, date, note, user, reference=None)
         raise Conflict("Payments can only be recorded against confirmed invoices.")
     if amount > invoice.amount_due:
         raise ValidationError({"amount": [f"This is more than the {invoice.amount_due} still due."]})
-    payment = Payment.objects.create(invoice=invoice, method=method, amount=amount, date=date, note=note, recorded_by=user, reference=reference)
+    payment = Payment.objects.create(business_id=invoice.business_id, invoice=invoice, method=method, amount=amount, date=date, note=note, recorded_by=user, reference=reference)
     invoice.amount_paid += amount
     if invoice.amount_due == 0:
         invoice.state = I.PAID
@@ -837,11 +845,11 @@ def confirm_checkout(session_id, invoice_id):
 # ---------------------------------------------------------------- overdue reminders
 
 
-def send_reminders(today=None, limit=200):
+def send_reminders(today=None, limit=200, business_id=None):
     """Chase overdue invoices by email, and by SMS where possible, up to the configured count and spacing."""
     today = today or timezone.localdate()
     cutoff = today - timedelta(days=settings.REMINDER_INTERVAL_DAYS)
-    due = Invoice.objects.select_related("customer").filter(
+    due = _in_business(Invoice.objects.select_related("customer"), business_id).filter(
         state=I.CONFIRMED, due_date__lt=today, reminder_count__lt=settings.REMINDER_MAX_COUNT
     ).filter(Q(last_reminder_at__isnull=True) | Q(last_reminder_at__lte=cutoff)).order_by("due_date")[:limit]
     reminded, texted, failed = 0, 0, 0

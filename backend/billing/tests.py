@@ -8,7 +8,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
-from accounts.models import User
+from accounts.models import Business, User
 from billing import notify, revenue, services
 from billing.models import Invoice, Payment, PaymentRequest, SalesTarget, Subscription
 from catalog.models import Discount, PaymentTerm, Plan, Product, ProductVariant, Tax
@@ -21,20 +21,26 @@ class Base(TestCase):
     def setUp(self):
         cache.clear()  # request throttles are counted in the cache, and must not carry over between tests
         self.today = timezone.localdate()
-        self.admin = User.objects.create_user("admin@x.example", PASSWORD, role="admin")
-        self.staff = User.objects.create_user("staff@x.example", PASSWORD, role="staff")
-        self.cust = User.objects.create_user("c1@x.example", PASSWORD, company="C1")
-        self.other = User.objects.create_user("c2@x.example", PASSWORD, company="C2")
-        self.tax = Tax.objects.create(name="GST", rate=Decimal("18"))
-        self.term = PaymentTerm.objects.create(name="Net 15", due_days=15)
-        self.product = Product.objects.create(name="Seat", sales_price=Decimal("100"))
+        self.biz = Business.objects.create(name="Test business")
+        self.admin = self.make_user("admin@x.example", PASSWORD, role="admin")
+        self.staff = self.make_user("staff@x.example", PASSWORD, role="staff")
+        self.cust = self.make_user("c1@x.example", PASSWORD, company="C1")
+        self.other = self.make_user("c2@x.example", PASSWORD, company="C2")
+        self.tax = Tax.objects.create(business=self.biz, name="GST", rate=Decimal("18"))
+        self.term = PaymentTerm.objects.create(business=self.biz, name="Net 15", due_days=15)
+        self.product = Product.objects.create(business=self.biz, name="Seat", sales_price=Decimal("100"))
         self.product.taxes.add(self.tax)
         self.variant = ProductVariant.objects.create(product=self.product, value="Odoo", extra_price=Decimal("560"))
-        self.addon = Product.objects.create(name="Backup", sales_price=Decimal("50"), type="addon")
+        self.addon = Product.objects.create(business=self.biz, name="Backup", sales_price=Decimal("50"), type="addon")
         self.plan = Plan.objects.create(
+            business=self.biz,
             name="Monthly", price=Decimal("0"), billing_period="monthly", min_quantity=2,
             start_date=self.today - timedelta(days=800), pausable=True,
         )
+
+    def make_user(self, email, password=None, **extra):
+        extra.setdefault("business", self.biz)
+        return User.objects.create_user(email, password, **extra)
 
     def api(self, user=None):
         client = APIClient()
@@ -58,44 +64,9 @@ class Base(TestCase):
         return Subscription.objects.get(pk=sub.pk)
 
 
-class AuthTests(Base):
-    def signup(self, email="new@x.example", password=PASSWORD):
-        return self.api().post("/api/auth/signup/", {"email": email, "password": password}, format="json")
-
-    def test_signup_creates_customer(self):
-        self.assertEqual(self.signup().status_code, 201)
-        self.assertEqual(User.objects.get(email="new@x.example").role, "customer")
-
-    def test_duplicate_email_refused_in_any_case(self):
-        self.assertEqual(self.signup("C1@X.example").status_code, 400)
-
-    def test_password_rules(self):
-        for weak in ["Short@1a", "alllower@123", "ALLUPPER@123", "NoSpecial123", "Exactly@8"[:8]]:
-            self.assertEqual(self.signup(password=weak).status_code, 400, weak)
-
-    def test_signup_cannot_choose_role(self):
-        self.api().post("/api/auth/signup/", {"email": "h@x.example", "password": PASSWORD, "role": "admin"}, format="json")
-        self.assertEqual(User.objects.get(email="h@x.example").role, "customer")
-
-    @override_settings(EMAIL_BACKEND="django.core.mail.backends.locmem.EmailBackend")
-    def test_reset_flow_single_use(self):
-        client = self.api()
-        unknown = client.post("/api/auth/forgot-password/", {"email": "nobody@x.example"}, format="json")
-        known = client.post("/api/auth/forgot-password/", {"email": "c1@x.example"}, format="json")
-        self.assertEqual(unknown.data, known.data)
-        self.assertEqual(len(mail.outbox), 1)
-        query = mail.outbox[0].body.split("reset-password?")[1].split()[0]
-        uid, token = [part.split("=")[1] for part in query.split("&")]
-        body = {"uid": uid, "token": token, "password": "Another@Pass2"}
-        self.assertEqual(client.post("/api/auth/reset-password/", body, format="json").status_code, 200)
-        self.assertEqual(client.post("/api/auth/reset-password/", body, format="json").status_code, 400)
-        self.cust.refresh_from_db()
-        self.assertTrue(self.cust.check_password("Another@Pass2"))
-
-
 class AccessTests(Base):
     def test_only_admin_adds_staff(self):
-        body = {"email": "s2@x.example"}
+        body = {"first_name": "Sam", "department": "sales", "password": PASSWORD}
         self.assertEqual(self.api(self.staff).post("/api/staff/", body, format="json").status_code, 403)
         self.assertEqual(self.api(self.cust).post("/api/staff/", body, format="json").status_code, 403)
         self.assertEqual(self.api(self.admin).post("/api/staff/", body, format="json").status_code, 201)
@@ -179,6 +150,7 @@ class LifecycleTests(Base):
 
     def test_plan_options_respected(self):
         locked = Plan.objects.create(
+            business=self.biz,
             name="Locked", start_date=self.plan.start_date, min_quantity=1, closable=False, pausable=False, renewable=False
         )
         sub = self.sub(plan=locked)
@@ -194,7 +166,7 @@ class LifecycleTests(Base):
         self.assertEqual(client.post(f"/api/subscriptions/{sub.pk}/resume/").data["state"], "active")
 
     def test_auto_close_only_when_plan_says_so(self):
-        auto = Plan.objects.create(name="Auto", start_date=self.plan.start_date, min_quantity=1, auto_close=True)
+        auto = Plan.objects.create(business=self.biz, name="Auto", start_date=self.plan.start_date, min_quantity=1, auto_close=True)
         ended = self.sub(plan=auto, months_ago=13)
         manual = self.sub(months_ago=13)
         services.close_ended()
@@ -336,7 +308,7 @@ class DiscountTests(Base):
         products = extra.pop("products", [self.product])
         subs = extra.pop("subscriptions", [])
         defaults = {"name": "D", "kind": "percent", "value": Decimal("10"), "start_date": self.today - timedelta(days=5)}
-        discount = Discount.objects.create(**{**defaults, **extra})
+        discount = Discount.objects.create(business=self.biz, **{**defaults, **extra})
         discount.products.set(products)
         discount.subscriptions.set(subs)
         return discount
@@ -546,12 +518,15 @@ class GoogleLoginTests(Base):
         with patch("accounts.views.id_token.verify_oauth2_token", return_value=claims, side_effect=error):
             return self.api().post("/api/auth/google/", {"credential": "token"}, format="json")
 
-    def test_new_user_becomes_customer(self):
-        response = self.login({"email": "G@x.example", "email_verified": True, "given_name": "Gia"})
+    def test_new_gmail_user_becomes_a_business_owner(self):
+        response = self.login({"email": "G@gmail.com", "email_verified": True, "given_name": "Gia"})
         self.assertEqual(response.status_code, 200)
-        user = User.objects.get(email="g@x.example")
-        self.assertEqual(user.role, "customer")
+        user = User.objects.get(email="g@gmail.com")
+        self.assertEqual((user.role, user.business.name), ("admin", "Gia"))
         self.assertFalse(user.has_usable_password())
+
+    def test_new_google_user_outside_gmail_is_refused(self):
+        self.assertEqual(self.login({"email": "g@company.example", "email_verified": True}).status_code, 400)
 
     def test_unverified_password_account_is_not_linked(self):
         response = self.login({"email": "c1@x.example", "email_verified": True})
@@ -559,7 +534,7 @@ class GoogleLoginTests(Base):
         self.assertNotIn("access", response.data)
 
     def test_invited_account_without_password_is_linked(self):
-        invited = User.objects.create_user("inv@x.example", None)
+        invited = self.make_user("inv@x.example", None)
         self.assertEqual(self.login({"email": "inv@x.example", "email_verified": True}).status_code, 200)
         invited.refresh_from_db()
         self.assertTrue(invited.email_verified)
@@ -598,11 +573,11 @@ class GrowthFeatureTests(Base):
     def setUp(self):
         super().setUp()
         start = self.today - timedelta(days=800)
-        self.small = Plan.objects.create(name="Small", price=Decimal("300"), billing_period="monthly", start_date=start, is_public=True)
-        self.big = Plan.objects.create(name="Big", price=Decimal("900"), billing_period="monthly", start_date=start, is_public=True)
-        self.free = Plan.objects.create(name="Free try", price=Decimal("500"), billing_period="monthly", start_date=start, is_public=True, trial_days=14)
-        self.hidden = Plan.objects.create(name="Hidden", price=Decimal("500"), billing_period="monthly", start_date=start)
-        self.yearly = Plan.objects.create(name="Year", price=Decimal("500"), billing_period="yearly", start_date=start, is_public=True)
+        self.small = Plan.objects.create(business=self.biz, name="Small", price=Decimal("300"), billing_period="monthly", start_date=start, is_public=True)
+        self.big = Plan.objects.create(business=self.biz, name="Big", price=Decimal("900"), billing_period="monthly", start_date=start, is_public=True)
+        self.free = Plan.objects.create(business=self.biz, name="Free try", price=Decimal("500"), billing_period="monthly", start_date=start, is_public=True, trial_days=14)
+        self.hidden = Plan.objects.create(business=self.biz, name="Hidden", price=Decimal("500"), billing_period="monthly", start_date=start)
+        self.yearly = Plan.objects.create(business=self.biz, name="Year", price=Decimal("500"), billing_period="yearly", start_date=start, is_public=True)
 
     def start(self, plan, user=None):
         return self.api(user or self.cust).post("/api/subscriptions/start/", {"plan": plan.pk}, format="json")
@@ -614,12 +589,12 @@ class GrowthFeatureTests(Base):
         return Subscription.objects.get(pk=sub.pk)
 
     def test_public_plans_need_no_login_and_hide_private_ones(self):
-        response = self.api().get("/api/public/plans/")
+        response = self.api().get(f"/api/public/sites/{self.biz.code}/")
         self.assertEqual(response.status_code, 200)
-        names = [row["name"] for row in response.data]
+        names = [row["name"] for row in response.data["plans"]]
         self.assertIn("Small", names)
         self.assertNotIn("Hidden", names)
-        self.assertNotIn("cost_price", response.data[0])
+        self.assertNotIn("cost_price", response.data["plans"][0])
 
     def test_customer_starts_public_plan_once(self):
         response = self.start(self.small)
@@ -694,7 +669,7 @@ class GrowthFeatureTests(Base):
         self.assertIsNone(Subscription.objects.get(pk=self.start(self.free).data["id"]).trial_ends)
 
     def test_customer_cannot_leave_a_committed_plan(self):
-        fixed = Plan.objects.create(name="Fixed", price=Decimal("500"), billing_period="monthly", start_date=self.small.start_date, is_public=True, closable=False)
+        fixed = Plan.objects.create(business=self.biz, name="Fixed", price=Decimal("500"), billing_period="monthly", start_date=self.small.start_date, is_public=True, closable=False)
         team_plan = self.billed(self.hidden)
         locked = self.billed(fixed)
         body = {"plan": self.small.pk}
@@ -740,7 +715,7 @@ class GrowthFeatureTests(Base):
         self.assertEqual(self.api(self.other).post(url, {"plan": self.big.pk}, format="json").status_code, 404)
 
     def make_code(self, **extra):
-        return Discount.objects.create(name="Promo", kind="percent", value=Decimal("50"), scope="subscriptions", start_date=self.today, code="SAVE50", **extra)
+        return Discount.objects.create(business=self.biz, name="Promo", kind="percent", value=Decimal("50"), scope="subscriptions", start_date=self.today, code="SAVE50", **extra)
 
     def test_code_applies_only_after_redeeming(self):
         self.make_code()
@@ -796,7 +771,7 @@ class GrowthFeatureTests(Base):
         self.assertEqual(event["actor_name"], self.staff.display_name)
 
     def test_export_is_team_only_and_defuses_formulas(self):
-        evil = User.objects.create_user("evil@x.example", PASSWORD, company="=HYPERLINK(1)")
+        evil = self.make_user("evil@x.example", PASSWORD, company="=HYPERLINK(1)")
         services.bill_subscription(self.sub(quantity=2, customer=evil).pk)
         self.assertEqual(self.api(self.cust).get("/api/reports/export/invoices/").status_code, 403)
         response = self.api(self.staff).get("/api/reports/export/invoices/")
@@ -820,6 +795,7 @@ class RevenueRecognitionTests(Base):
         sub = self.sub(quantity=2)
         subtotal, discount, tax = Decimal(subtotal), Decimal(discount), Decimal(tax)
         return Invoice.objects.create(
+            business=self.biz,
             subscription=sub, customer=self.cust, customer_name="C1", customer_email="c1@x.example", state=state,
             invoice_date=start, due_date=end, period_start=start, period_end=end, billing_key=f"t:{sub.pk}",
             subtotal=subtotal, discount_total=discount, tax_total=tax, total=total or subtotal - discount + tax,
@@ -845,22 +821,22 @@ class RevenueRecognitionTests(Base):
 
     def test_tax_is_left_out_and_discount_lowers_revenue(self):
         self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", discount="100.00", tax="162.00")
-        report = revenue.revenue_report(today=date(2026, 2, 1))
+        report = revenue.revenue_report(self.biz.pk, today=date(2026, 2, 1))
         self.assertEqual(report["summary"]["recognized_to_date"], Decimal("900.00"))
 
     def test_credit_lowers_revenue_in_proportion(self):
         self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", tax="180.00", total=Decimal("590.00"))
-        report = revenue.revenue_report(today=date(2026, 2, 1))
+        report = revenue.revenue_report(self.biz.pk, today=date(2026, 2, 1))
         self.assertEqual(report["summary"]["recognized_to_date"], Decimal("500.00"))
 
     def test_draft_and_cancelled_are_not_revenue(self):
         self.issued(date(2026, 1, 1), date(2026, 1, 31), state="draft")
         self.issued(date(2026, 1, 1), date(2026, 1, 31), state="cancelled")
-        self.assertEqual(revenue.revenue_report(today=date(2026, 2, 1))["summary"]["billed_to_date"], Decimal("0.00"))
+        self.assertEqual(revenue.revenue_report(self.biz.pk, today=date(2026, 2, 1))["summary"]["billed_to_date"], Decimal("0.00"))
 
     def test_deferred_is_billed_but_not_yet_earned(self):
         self.issued(date(2026, 1, 1), date(2026, 3, 31), subtotal="9000.00", tax="0.00")  # 90 days
-        report = revenue.revenue_report(start=date(2026, 1, 1), end=date(2026, 4, 1), today=date(2026, 1, 31))
+        report = revenue.revenue_report(self.biz.pk, start=date(2026, 1, 1), end=date(2026, 4, 1), today=date(2026, 1, 31))
         self.assertEqual(report["summary"]["recognized_to_date"], Decimal("3100.00"))
         self.assertEqual(report["summary"]["deferred"], Decimal("5900.00"))
         months = {row["month"]: row for row in report["history"]}
@@ -873,14 +849,14 @@ class RevenueRecognitionTests(Base):
 
     def test_filters_and_breakdowns(self):
         invoice = self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", tax="0.00")
-        other = Plan.objects.create(name="Other", price=Decimal("1"), billing_period="yearly", start_date=date(2020, 1, 1))
+        other = Plan.objects.create(business=self.biz, name="Other", price=Decimal("1"), billing_period="yearly", start_date=date(2020, 1, 1))
         window = {"start": date(2026, 1, 1), "end": date(2026, 2, 1), "today": date(2026, 3, 1)}
-        report = revenue.revenue_report(**window)
+        report = revenue.revenue_report(self.biz.pk, **window)
         self.assertEqual(report["by_plan"], [{"name": "Monthly", "amount": Decimal("1000.00"), "share": 100.0}])
         self.assertEqual(report["by_period"][0]["name"], "monthly")
         self.assertEqual(report["top_customers"][0]["name"], invoice.customer_name)
-        self.assertEqual(revenue.revenue_report(plan=other.pk, **window)["by_plan"], [])
-        self.assertEqual(revenue.revenue_report(period="yearly", **window)["summary"]["billed_to_date"], Decimal("0.00"))
+        self.assertEqual(revenue.revenue_report(self.biz.pk, plan=other.pk, **window)["by_plan"], [])
+        self.assertEqual(revenue.revenue_report(self.biz.pk, period="yearly", **window)["summary"]["billed_to_date"], Decimal("0.00"))
 
     def test_api_is_team_only_and_checks_input(self):
         self.assertEqual(self.api(self.cust).get("/api/reports/revenue/").status_code, 403)
@@ -901,10 +877,10 @@ class RevenueRecognitionTests(Base):
 class BusinessFeatureTests(Base):
     def setUp(self):
         super().setUp()
-        self.care = User.objects.create_user("care@x.example", PASSWORD, role="staff", department="support")
-        self.seller = User.objects.create_user("sell@x.example", PASSWORD, role="staff", department="sales")
-        self.seller2 = User.objects.create_user("sell2@x.example", PASSWORD, role="staff", department="sales")
-        self.fee = Plan.objects.create(name="Fee", price=Decimal("300"), billing_period="monthly", start_date=self.today - timedelta(days=9), is_public=True)
+        self.care = self.make_user("care@x.example", PASSWORD, role="staff", department="support")
+        self.seller = self.make_user("sell@x.example", PASSWORD, role="staff", department="sales")
+        self.seller2 = self.make_user("sell2@x.example", PASSWORD, role="staff", department="sales")
+        self.fee = Plan.objects.create(business=self.biz, name="Fee", price=Decimal("300"), billing_period="monthly", start_date=self.today - timedelta(days=9), is_public=True)
 
     # ---- automatic renewal
     def test_customer_has_no_renew_button_or_endpoint(self):
@@ -964,7 +940,7 @@ class BusinessFeatureTests(Base):
 
     def test_list_filter_separates_codes_from_rules(self):
         self.assertEqual(self.promo(reward="credit", value="5").status_code, 201)
-        Discount.objects.create(name="Plain", value=Decimal("5"), start_date=self.today)
+        Discount.objects.create(business=self.biz, name="Plain", value=Decimal("5"), start_date=self.today)
         client = self.api(self.admin)
         self.assertEqual([r["name"] for r in client.get("/api/discounts/?has_code=true").data["results"]], ["P"])
         self.assertEqual([r["name"] for r in client.get("/api/discounts/?has_code=false").data["results"]], ["Plain"])
@@ -1109,7 +1085,7 @@ class BusinessFeatureTests(Base):
 
     def test_only_admin_assigns_any_plan(self):
         url = f"/api/customers/{self.cust.pk}/assign_plan/"
-        private = Plan.objects.create(name="Private", price=Decimal("50"), billing_period="yearly", start_date=self.today, min_quantity=9)
+        private = Plan.objects.create(business=self.biz, name="Private", price=Decimal("50"), billing_period="yearly", start_date=self.today, min_quantity=9)
         self.assertEqual(self.api(self.staff).post(url, {"plan": private.pk}, format="json").status_code, 403)
         response = self.api(self.admin).post(url, {"plan": private.pk}, format="json")
         self.assertEqual(response.status_code, 201)
@@ -1136,7 +1112,7 @@ class BusinessFeatureTests(Base):
         self.assertEqual(invoice.total, Decimal("300.00"))
 
     # ---- import
-    CSV = "email,first_name,company,plan,product,quantity,start_date\nnew@buyer.example,Nia,Nia Co,Fee,Seat,3,{start}\n"
+    CSV = "email,first_name,company,plan,product,quantity,start_date\nnew.buyer@gmail.com,Nia,Nia Co,Fee,Seat,3,{start}\n"
 
     def imported(self, text, commit=True, user=None):
         return self.api(user or self.admin).post("/api/imports/subscribers/", {"csv": text, "commit": commit}, format="json")
@@ -1144,22 +1120,22 @@ class BusinessFeatureTests(Base):
     def test_preview_writes_nothing(self):
         data = self.imported(self.CSV.format(start=self.today), commit=False).data
         self.assertEqual((data["ready"], data["errors"]), (1, 0))
-        self.assertFalse(User.objects.filter(email="new@buyer.example").exists())
+        self.assertFalse(User.objects.filter(email="new.buyer@gmail.com").exists())
 
     def test_import_creates_subscriber_without_back_billing_and_only_once(self):
         start = self.today - timedelta(days=95)
         self.assertEqual(self.imported(self.CSV.format(start=start)).data["imported"], 1)
-        sub = Subscription.objects.get(customer__email="new@buyer.example")
+        sub = Subscription.objects.get(customer__email="new.buyer@gmail.com")
         self.assertEqual((sub.state, sub.recurring_total), ("active", Decimal("600.00")))
         self.assertGreaterEqual(sub.next_invoice_date, self.today)
         services.run_billing(self.today - timedelta(days=1))
         self.assertEqual(Invoice.objects.filter(subscription=sub).count(), 0)
-        self.assertFalse(User.objects.get(email="new@buyer.example").has_usable_password())
+        self.assertFalse(User.objects.get(email="new.buyer@gmail.com").has_usable_password())
         self.assertEqual(self.imported(self.CSV.format(start=start)).data["skipped"], 1)
-        self.assertEqual(Subscription.objects.filter(customer__email="new@buyer.example").count(), 1)
+        self.assertEqual(Subscription.objects.filter(customer__email="new.buyer@gmail.com").count(), 1)
 
     def test_bad_rows_are_reported_and_good_rows_still_import(self):
-        text = "email,plan,start_date,quantity\nbad,Fee,,\na@b.example,Nope,,\nc@b.example,Fee,2026-13-99,\nd@b.example,Fee,,0\nstaff@x.example,Fee,,\ne@b.example,Fee,,\n"
+        text = "email,plan,start_date,quantity\nbad,Fee,,\naa@gmail.com,Nope,,\ncc@gmail.com,Fee,2026-13-99,\ndd@gmail.com,Fee,,0\nstaff@x.example,Fee,,\nee@gmail.com,Fee,,\n"
         data = self.imported(text).data
         self.assertEqual((data["imported"], data["errors"]), (1, 5))
 

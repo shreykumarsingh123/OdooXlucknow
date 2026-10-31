@@ -19,6 +19,12 @@ class CatalogViewSet(viewsets.ModelViewSet):
     search_fields = ["name"]
     filterset_fields = ["is_active"]
 
+    def get_queryset(self):
+        return super().get_queryset().filter(business_id=self.request.user.business_id)
+
+    def perform_create(self, serializer):
+        serializer.save(business_id=self.request.user.business_id)
+
 
 class TaxViewSet(CatalogViewSet):
     queryset = Tax.objects.all()

@@ -13,7 +13,7 @@ const personColumns = [
   active,
 ]
 const personFields = [
-  { name: 'email', label: 'Email', type: 'email', required: true },
+  { name: 'email', label: 'Email', type: 'email', required: true, help: 'Must be a name@gmail.com address.' },
   { name: 'first_name', label: 'First name' },
   { name: 'last_name', label: 'Last name' },
   { name: 'company', label: 'Company' },
@@ -29,19 +29,25 @@ export const customers = {
   columns: [{ key: 'name', label: 'Name', render: (r) => <Link to={`/customers/${r.id}`}>{r.name}</Link> }, ...personColumns.slice(1)],
   fields: personFields,
   canWrite: (user) => user.role === 'admin' || user.role === 'staff',
-  note: 'New customers receive an email link to choose their password.',
+  note: 'New customers choose their password with Forgot password, using a one-time code.',
 }
 
 export const staff = {
-  title: 'Staff', singular: 'Staff member', path: '/staff/', deletable: false,
-  intro: 'Only the admin can add staff. The department decides what they see.',
-  columns: [personColumns[0], personColumns[1], { key: 'department', label: 'Department', render: (r) => DEPARTMENTS[r.department] }, active],
-  fields: [
-    personFields[0], personFields[1], personFields[2],
-    { name: 'department', label: 'Department', type: 'select-optional', options: Object.entries(DEPARTMENTS).map(([value, text]) => ({ value, label: text })) },
-    personFields[4], activeField,
+  title: 'Staff', singular: 'Staff member', path: '/staff/',
+  intro: 'Add your team and give each one a role. Their sign-in address is made from the name and role. People who join with your Business ID appear here as Waiting until you turn them on.',
+  columns: [
+    { key: 'name', label: 'Name' },
+    { key: 'email', label: 'Sign-in email', render: (r) => <b>{r.email}</b> },
+    { key: 'department_label', label: 'Role' },
+    { key: 'is_active', label: 'Status', render: (r) => <Badge value={r.is_active ? 'active' : 'pending'} /> },
   ],
-  note: 'New staff receive an email link to choose their password.',
+  fields: [
+    { name: 'first_name', label: 'First name', required: true, help: 'This becomes part of the sign-in email.' },
+    { name: 'last_name', label: 'Last name' },
+    { name: 'department', label: 'Role', type: 'select', default: 'sales', required: true, options: [{ value: 'sales', label: 'Sales' }, { value: 'support', label: 'Customer care' }] },
+    { name: 'password', label: 'First password', type: 'password', help: 'Give this to the person. Leave empty when editing to keep it.' },
+    activeField,
+  ],
 }
 
 export const taxes = {

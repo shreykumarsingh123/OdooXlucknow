@@ -50,10 +50,10 @@ All use the password in `backend/billing/management/commands/seed_demo.py`. The 
 
 | Role | Email |
 |------|-------|
-| Admin | `admin@brightloop.example` |
-| Staff | `staff@brightloop.example` |
-| Customer | `customer@acme.example` |
-| Customer | `finance@globex.example` |
+| Admin | `asha@admin.com` |
+| Staff | `rohanmb7k2q@sale.com` |
+| Customer | `priya@gmail.com` |
+| Customer | `priya@gmail.com` |
 
 Without SMTP settings, emails such as reset links are saved in `backend/sent_emails/`.
 
@@ -103,4 +103,15 @@ Logged-out visitors at `/` see the landing page, with prices from `GET /api/publ
 | Customer account and Assign a plan | Click a customer's name |
 | Bring in existing subscribers | Import subscribers, with a Load sample data button |
 
-Demo logins also include `care@brightloop.example` (customer care) and `sales@brightloop.example` (sales).
+Starting logins, all with the seed password. Each person adds their own real recovery email at first login.
+
+| Login | Account |
+|-------|---------|
+| `asha@admin.com` | Administrator |
+| `ravi@adminsale.com`, `neha@support.com` | Brightloop sales, customer care |
+| `manbhwan@gmail.com` | Owner of Manbhwan Foods, Business ID `mb7k2q` |
+| `rohanmb7k2q@sale.com`, `pooja.mb7k2q@support.com` | Manbhwan sales, customer care |
+| `priya@gmail.com`, `rahul@gmail.com` | Manbhwan customers |
+| `sunrise@gmail.com` | Owner of Sunrise Fitness, a second business |
+
+Manbhwan's public site is at `/shop/mb7k2q`.

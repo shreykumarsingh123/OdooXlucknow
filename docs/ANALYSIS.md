@@ -71,6 +71,15 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | R-46 | Admin approves payments made outside Stripe | Nothing recorded until approved; approved once only |
 | R-47 | Admin sees a customer's account and assigns any active plan | Only admin assigns; replace limited to that customer's subscriptions |
 | R-48 | Import subscribers from CSV, with a sample data button | Preview writes nothing; no back-billing; a repeat import creates nothing |
+| R-49 | Forgot password uses a 6-digit email code | Works once, expires in 10 minutes, 5 tries, stored hashed; unknown email gets the same answer |
+| R-50 | The email format decides the account type and landing page | Other formats refused; Brightloop addresses cannot sign up |
+| R-51 | Unique Business ID to share with the team | Joining stays locked until the owner approves |
+| R-52 | One administrator, Brightloop staff, owners and their staff | Database allows one administrator; only owners manage their team |
+| R-53 | Each business's data is separate | Another business's ids act as if they do not exist |
+| R-54 | Brightloop staff see metrics for all businesses and manage users | Owners and customers get 403; a suspended business is locked out |
+| R-55 | Team chat per business, and admin chat with Brightloop | One business cannot read another's chat |
+| R-56 | Public site per business whose subscriptions are tracked | Subscribing appears in that business's panel only |
+| R-57 | Recovery email required after login | The app is blocked until it is added; must be a real mailbox, not a work address |
 | R-38 | Revenue page: revenue recognition, analysis and history | Invoice months add up exactly to its net amount; tax, drafts and cancelled invoices left out; deferred matches a manual count; team only |
 | R-37 | Animated public landing page before the app | Shown at `/` when logged out; prices come from the API; reduced motion respected |
 
@@ -91,9 +100,12 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | A-11 | Pause is an extra state beside Active, since the brief allows pausing | |
 | A-12 | A customer starting a public plan online goes straight to Active, for 12 months, on the shortest payment term. Only plans with a price and a minimum quantity of 1 qualify | `start_plan` service |
 | A-13 | Plan changes take effect at once, only between plans with the same billing period, and prorate the plan fee by days left in the billed period | `change_plan` service |
-| A-16 | One deployment serves one business. Many businesses on one deployment is planned separately | PLAN.md |
+| A-16 | One address belongs to one business, so a person needs a different address to subscribe to a second business | `site_subscribe`, signup |
 | A-17 | A sale counts in the month it was activated, at its monthly recurring value before tax | `_sales_figures` |
 | A-18 | Imported subscribers have paid for past periods elsewhere, so billing starts at the next date due | `billing/imports.py` |
 | A-19 | Customer care and sales cannot see finance reports or record payments | `IsBackOffice` |
+| A-20 | Self-joined team members wait for the owner's approval, because knowing a Business ID alone must not open a business's records | `SignupSerializer` |
+| A-21 | Sale.com and support.com addresses have no real mailbox here, so password codes go to the recovery address | `send_password_otp` |
+| A-22 | The compulsory recovery email is enforced in the app screens, and the API still answers without it | `RecoveryGate` |
 | A-15 | Revenue is earned evenly per day over the invoice period, before tax, and from Confirmed. Breakdowns use the plan the subscription is on now. A late invoice is recognized in the period it covers | `billing/revenue.py` |
 | A-14 | One-off charges and credits are admin-only, in line with discount rules | One permission check |

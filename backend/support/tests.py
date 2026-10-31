@@ -3,7 +3,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from accounts.models import User
+from accounts.models import Business, User
 from support.models import Ticket
 
 PASSWORD = "Strong@Pass1"
@@ -12,11 +12,12 @@ PASSWORD = "Strong@Pass1"
 class SupportTests(TestCase):
     def setUp(self):
         cache.clear()
-        self.admin = User.objects.create_user("admin@x.example", PASSWORD, role="admin")
-        self.care = User.objects.create_user("care@x.example", PASSWORD, role="staff", department="support")
-        self.seller = User.objects.create_user("sell@x.example", PASSWORD, role="staff", department="sales")
-        self.cust = User.objects.create_user("c1@x.example", PASSWORD, company="C1")
-        self.other = User.objects.create_user("c2@x.example", PASSWORD, company="C2")
+        self.biz = Business.objects.create(name="Test business")
+        self.admin = User.objects.create_user("admin@x.example", PASSWORD, business=self.biz, role="admin")
+        self.care = User.objects.create_user("care@x.example", PASSWORD, business=self.biz, role="staff", department="support")
+        self.seller = User.objects.create_user("sell@x.example", PASSWORD, business=self.biz, role="staff", department="sales")
+        self.cust = User.objects.create_user("c1@x.example", PASSWORD, business=self.biz, company="C1")
+        self.other = User.objects.create_user("c2@x.example", PASSWORD, business=self.biz, company="C2")
 
     def api(self, user):
         client = APIClient()

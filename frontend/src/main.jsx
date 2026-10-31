@@ -1,12 +1,13 @@
 import { createContext, StrictMode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useSearchParams } from 'react-router-dom'
 import { api, tokens } from './api'
 import { CrudPage } from './CrudPage'
 import * as configs from './configs'
 import { Landing } from './landing'
 import { BrowsePlans, Dashboard, InvoiceDetail, Invoices, Payments, Profile, Revenue, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
 import './styles.css'
+import { AdminChat, MyPlan, PlatformOverview, PlatformUsers, RecoveryGate, Shop } from './platform'
 import { CustomerDetail, ImportSubscribers, PaymentApprovals, Sales, TeamChat, TicketDetail, Tickets } from './team'
 import { ErrorBox, Field, ToastProvider } from './ui'
 
@@ -44,7 +45,8 @@ function AuthProvider({ children }) {
     tokens.clear()
     setUser(null)
   }, [])
-  const value = useMemo(() => ({ user, login, loginWithGoogle, logout }), [user, login, loginWithGoogle, logout])
+  const refreshUser = useCallback(async () => setUser(await api.get('/auth/me/')), [])
+  const value = useMemo(() => ({ user, login, loginWithGoogle, logout, refreshUser }), [user, login, loginWithGoogle, logout, refreshUser])
   if (offline) return <div className="pad"><p>We cannot reach the server right now. You are still signed in.</p><button onClick={restore}>Try again</button></div>
   if (!ready) return <p className="muted pad">Loading…</p>
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
@@ -151,23 +153,51 @@ function Login() {
   )
 }
 
+function accountType(email) {
+  const value = email.trim().toLowerCase()
+  if (value.endsWith('@gmail.com')) return 'user'
+  if (value.endsWith('@sale.com') || value.endsWith('@support.com')) return 'team'
+  return value.includes('@') && value.split('@')[1].includes('.') ? 'other' : ''
+}
+
 function Signup() {
   const { login } = useAuth()
-  const [form, setForm] = useState({ email: '', password: '', first_name: '', last_name: '', company: '', phone: '' })
+  const [form, setForm] = useState({ email: '', password: '', first_name: '', last_name: '', company: '', phone: '', business_name: '', business_id: '' })
+  const [waiting, setWaiting] = useState(false)
+  const [joining, setJoining] = useState(false)
   const set = (name) => (e) => setForm((f) => ({ ...f, [name]: e.target.value }))
+  const type = accountType(form.email)
   const { error, busy, submit } = useSubmit(async () => {
-    await api.post('/auth/signup/', form)
-    await login(form.email, form.password)
+    const created = await api.post('/auth/signup/', form)
+    if (created.pending) setWaiting(true)
+    else await login(form.email, form.password)
   })
+  if (waiting) {
+    return (
+      <AuthCard title="Waiting for approval" footer={<Link to="/login">Back to sign in</Link>}>
+        <p role="status">Your account is created. The business owner needs to approve you under Staff, then you can sign in.</p>
+      </AuthCard>
+    )
+  }
   return (
     <AuthCard title="Create your account" footer={<>Already registered? <Link to="/login">Sign in</Link></>}>
       <form className="form" onSubmit={submit}>
         <ErrorBox error={error} />
+        <Field label="Email" error={error?.fields?.email} help="name@gmail.com for a business owner or customer. Team members: nameBUSINESSID@sale.com or name.BUSINESSID@support.com.">
+          <input type="email" autoComplete="email" required value={form.email} onChange={set('email')} />
+        </Field>
         <Field label="First name" error={error?.fields?.first_name}><input value={form.first_name} onChange={set('first_name')} /></Field>
         <Field label="Last name" error={error?.fields?.last_name}><input value={form.last_name} onChange={set('last_name')} /></Field>
-        <Field label="Company" error={error?.fields?.company}><input value={form.company} onChange={set('company')} /></Field>
+        {type === 'user' && (
+          <>
+            <label className="check"><input type="checkbox" checked={joining} onChange={(e) => { setJoining(e.target.checked); setForm((f) => ({ ...f, business_id: '', business_name: '' })) }} /><span>I am a customer of a business on Brightloop</span></label>
+            {joining
+              ? <Field label="Business ID" error={error?.fields?.business_id} help="The business gives you this."><input required value={form.business_id} onChange={set('business_id')} /></Field>
+              : <Field label="Your business name" error={error?.fields?.business_name} help="You get a Business ID to share with your team."><input required value={form.business_name} onChange={set('business_name')} /></Field>}
+          </>
+        )}
+        {type === 'team' && <p className="muted">The business ID in your address joins you to that team. The owner approves you first.</p>}
         <Field label="Phone" error={error?.fields?.phone} help="Optional. With country code, for payment reminders by SMS."><input type="tel" autoComplete="tel" value={form.phone} onChange={set('phone')} /></Field>
-        <Field label="Email" error={error?.fields?.email}><input type="email" autoComplete="email" required value={form.email} onChange={set('email')} /></Field>
         <Field label="Password" error={error?.fields?.password} help={PASSWORD_HELP}><input type="password" autoComplete="new-password" required value={form.password} onChange={set('password')} /></Field>
         <button className="primary wide" disabled={busy}>{busy ? 'Creating…' : 'Create account'}</button>
       </form>
@@ -177,40 +207,43 @@ function Signup() {
 }
 
 function ForgotPassword() {
-  const [email, setEmail] = useState('')
-  const [sent, setSent] = useState(null)
-  const { error, busy, submit } = useSubmit(async () => {
-    setSent((await api.post('/auth/forgot-password/', { email })).message)
+  const [step, setStep] = useState('email')
+  const [form, setForm] = useState({ email: '', otp: '', password: '' })
+  const [notice, setNotice] = useState('')
+  const [devCode, setDevCode] = useState('')
+  const set = (name) => (e) => setForm((f) => ({ ...f, [name]: e.target.value }))
+  const ask = useSubmit(async () => {
+    const result = await api.post('/auth/forgot-password/', { email: form.email })
+    setNotice(result.message)
+    setDevCode(result.dev_otp || '')
+    setStep('code')
+  })
+  const reset = useSubmit(async () => {
+    setNotice((await api.post('/auth/reset-password/', form)).message)
+    setStep('done')
   })
   return (
-    <AuthCard title="Reset your password" footer={<Link to="/login">Back to sign in</Link>}>
-      {sent ? <p role="status">{sent}</p> : (
-        <form className="form" onSubmit={submit}>
-          <ErrorBox error={error} />
-          <Field label="Registered email"><input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} /></Field>
-          <button className="primary wide" disabled={busy}>Send reset link</button>
+    <AuthCard title="Forgot your password?" footer={<Link to="/login">Back to sign in</Link>}>
+      {step === 'email' && (
+        <form className="form" onSubmit={ask.submit}>
+          <p className="muted">Enter the email you sign in with. We send a 6-digit code to your recovery email.</p>
+          <ErrorBox error={ask.error} />
+          <Field label="Sign-in email"><input type="email" autoComplete="email" required value={form.email} onChange={set('email')} /></Field>
+          <button className="primary wide" disabled={ask.busy}>{ask.busy ? 'Sending…' : 'Send my code'}</button>
         </form>
       )}
-    </AuthCard>
-  )
-}
-
-function ResetPassword() {
-  const [params] = useSearchParams()
-  const [password, setPassword] = useState('')
-  const [done, setDone] = useState(null)
-  const { error, busy, submit } = useSubmit(async () => {
-    setDone((await api.post('/auth/reset-password/', { uid: params.get('uid'), token: params.get('token'), password })).message)
-  })
-  return (
-    <AuthCard title="Choose a new password" footer={<Link to="/login">Back to sign in</Link>}>
-      {done ? <p role="status">{done}</p> : (
-        <form className="form" onSubmit={submit}>
-          <ErrorBox error={error} />
-          <Field label="New password" error={error?.fields?.password} help={PASSWORD_HELP}><input type="password" autoComplete="new-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
-          <button className="primary wide" disabled={busy}>Save password</button>
+      {step === 'code' && (
+        <form className="form" onSubmit={reset.submit}>
+          <p role="status">{notice}</p>
+          {devCode && <div className="banner"><span><b>Email is not set up yet.</b> Your code for this test: <b>{devCode}</b></span></div>}
+          <ErrorBox error={reset.error} />
+          <Field label="6-digit code" error={reset.error?.fields?.otp}><input inputMode="numeric" autoComplete="one-time-code" maxLength="6" required value={form.otp} onChange={set('otp')} /></Field>
+          <Field label="New password" error={reset.error?.fields?.password} help={PASSWORD_HELP}><input type="password" autoComplete="new-password" required value={form.password} onChange={set('password')} /></Field>
+          <button className="primary wide" disabled={reset.busy}>Save new password</button>
+          <button type="button" className="link" onClick={() => setStep('email')}>Send a new code</button>
         </form>
       )}
+      {step === 'done' && <p role="status">{notice}</p>}
     </AuthCard>
   )
 }
@@ -237,6 +270,10 @@ const ICONS = {
   '/promo-codes': 'M20 12v8H4v-8M2 7h20v5H2zM12 22V7M12 7H8a2.5 2.5 0 1 1 2-4zM12 7h4a2.5 2.5 0 1 0-2-4z',
   '/payment-approvals': 'M22 11v1a10 10 0 1 1-6-9.1M22 4L12 14l-3-3',
   '/import': 'M21 15v6H3v-6M7 10l5 5 5-5M12 15V3',
+  '/platform': 'M12 2l10 6-10 6L2 8zM2 16l10 6 10-6',
+  '/platform/users': 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8',
+  '/admin-chat': 'M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6zM8 11h8',
+  '/my-plan': 'M2 6h20v13H2zM7 12l3 3 6-6',
 }
 
 function NavIcon({ to }) {
@@ -249,17 +286,43 @@ function NavIcon({ to }) {
 
 const BILLING = [['/', 'Dashboard'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices'], ['/payments', 'Payments'], ['/revenue', 'Revenue'], ['/customers', 'Customers']]
 const CATALOG = [['/products', 'Products'], ['/plans', 'Plans'], ['/templates', 'Quotation templates'], ['/taxes', 'Taxes'], ['/discounts', 'Discounts'], ['/payment-terms', 'Payment terms']]
-const PEOPLE = [['/tickets', 'Tickets'], ['/team-chat', 'Team chat']]
-const NAV = {
-  admin: [
+const CONSOLE = [['/platform', 'Brightloop overview'], ['/platform/users', 'All users']]
+const CHATS = [['/team-chat', 'Team chat'], ['/admin-chat', 'Admin chat']]
+const SETUP = [...CATALOG, ['/promo-codes', 'Promo codes'], ['/sales-targets', 'Sales targets'], ['/import', 'Import subscribers'], ['/staff', 'Staff']]
+const CARE = [['/tickets', 'Tickets'], ...CHATS, ['/customers', 'Customers'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices']]
+const SELLING = [['/sales', 'My sales'], ['/subscriptions', 'My subscriptions'], ['/invoices', 'Their invoices'], ['/customers', 'Customers'], ...CHATS]
+
+function navFor(user) {
+  const platform = user.business?.is_platform
+  const brightloop = platform ? [['Brightloop', CONSOLE]] : []
+  if (user.role === 'customer') return [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices'], ['/browse-plans', 'Browse plans'], ['/tickets', 'Help']]]]
+  if (user.department === 'support') return [...brightloop, ['Customer care', CARE], ['Reference', CATALOG]]
+  if (user.department === 'sales') return [...brightloop, ['Sales', SELLING], ['Reference', CATALOG]]
+  if (user.role === 'staff') return [...brightloop, ['Billing', BILLING], ['People', [['/tickets', 'Tickets'], ...CHATS, ['/sales', 'Sales team']]], ['Setup', [['/import', 'Import subscribers']]], ['Reference', CATALOG]]
+  return [
+    ...brightloop,
     ['Billing', [...BILLING, ['/payment-approvals', 'Payment approvals']]],
-    ['People', [...PEOPLE, ['/sales', 'Sales team']]],
-    ['Setup', [...CATALOG, ['/promo-codes', 'Promo codes'], ['/sales-targets', 'Sales targets'], ['/import', 'Import subscribers'], ['/staff', 'Staff']]],
-  ],
-  staff: [['Billing', BILLING], ['People', [...PEOPLE, ['/sales', 'Sales team']]], ['Setup', [['/import', 'Import subscribers']]], ['Reference', CATALOG]],
-  support: [['Customer care', [...PEOPLE, ['/customers', 'Customers'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices']]], ['Reference', CATALOG]],
-  sales: [['Sales', [['/sales', 'My sales'], ['/subscriptions', 'My subscriptions'], ['/invoices', 'Their invoices'], ['/customers', 'Customers'], ['/team-chat', 'Team chat']]], ['Reference', CATALOG]],
-  customer: [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices'], ['/browse-plans', 'Browse plans'], ['/tickets', 'Help']]]],
+    ['People', [['/tickets', 'Tickets'], ...CHATS, ['/sales', 'Sales team']]],
+    ['Setup', platform ? SETUP : [...SETUP, ['/my-plan', 'My Brightloop plan']]],
+  ]
+}
+
+function BusinessId({ business }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(business.code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch { /* the code is on screen to copy by hand */ }
+  }
+  return (
+    <div className="biz-id">
+      <small>{business.name}</small>
+      <button className="link" title="Copy your Business ID" onClick={copy}>ID: <b>{business.code}</b> {copied ? 'Copied' : 'Copy'}</button>
+      {!business.is_platform && <Link to={`/shop/${business.code}`}>Open our site</Link>}
+    </div>
+  )
 }
 
 function Shell() {
@@ -267,6 +330,7 @@ function Shell() {
   const [open, setOpen] = useState(false)
   const { pathname } = useLocation()
   if (!user) return pathname === '/' ? <Landing /> : <Navigate to="/login" replace />
+  if (!user.recovery_email) return <RecoveryGate />
   return (
     <div className="shell">
       <aside className={`side no-print ${open ? 'open' : ''}`}>
@@ -275,14 +339,15 @@ function Shell() {
           <button className="menu-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>Menu</button>
         </div>
         <nav onClick={() => setOpen(false)}>
-          {NAV[user.department || user.role].map(([group, links]) => (
+          {navFor(user).map(([group, links]) => (
             <div key={group}>
               <h3>{group}</h3>
               {links.map(([to, text]) => <NavLink key={to} to={to} end={to === '/'}><NavIcon to={to} />{text}</NavLink>)}
             </div>
           ))}
         </nav>
-        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{{ support: 'Customer care', sales: 'Sales' }[user.department] || user.role}</small><span className="who-links"><Link to="/profile">Profile</Link><button className="link" onClick={logout}>Sign out</button></span></div>
+        {user.role !== 'customer' && user.business && <BusinessId business={user.business} />}
+        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{user.role_label}</small><span className="who-links"><Link to="/profile">Profile</Link><button className="link" onClick={logout}>Sign out</button></span></div>
       </aside>
       <main className="content"><div className="page-in" key={pathname}><Outlet /></div></main>
     </div>
@@ -299,12 +364,18 @@ function Home() {
   if (user.role === 'customer') return <Navigate to="/subscriptions" replace />
   if (user.department === 'sales') return <Navigate to="/sales" replace />
   if (user.department === 'support') return <Navigate to="/tickets" replace />
+  if (user.business?.is_platform) return <Navigate to="/platform" replace />
   return <Dashboard />
 }
 
 const TEAM = ['admin', 'staff']
 const team = (element) => <Require roles={TEAM}>{element}</Require>
 const admin = (element) => <Require roles={['admin']}>{element}</Require>
+
+function PlatformOnly({ children }) {
+  const { user } = useAuth()
+  return user.business?.is_platform ? children : <Navigate to="/" replace />
+}
 
 function BackOffice({ children }) {
   const { user } = useAuth()
@@ -335,7 +406,7 @@ function App() {
       <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
       <Route path="/signup" element={<PublicOnly><Signup /></PublicOnly>} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
-      <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/shop/:code" element={<Shop />} />
       <Route element={<Shell />}>
         <Route index element={<Home />} />
         <Route path="profile" element={<Profile />} />
@@ -356,6 +427,10 @@ function App() {
         <Route path="sales" element={team(<Sales />)} />
         <Route path="import" element={<BackOffice><ImportSubscribers /></BackOffice>} />
         <Route path="payment-approvals" element={admin(<PaymentApprovals />)} />
+        <Route path="platform" element={team(<PlatformOnly><PlatformOverview /></PlatformOnly>)} />
+        <Route path="platform/users" element={team(<PlatformOnly><PlatformUsers /></PlatformOnly>)} />
+        <Route path="admin-chat" element={team(<AdminChat />)} />
+        <Route path="my-plan" element={admin(<MyPlan />)} />
         <Route path="promo-codes" element={admin(<CrudPage key="promo" config={configs.promoCodes} />)} />
         <Route path="sales-targets" element={admin(<CrudPage key="targets" config={configs.salesTargets} />)} />
         <Route path="products" element={team(<CrudPage key="products" config={configs.products} />)} />

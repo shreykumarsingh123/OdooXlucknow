@@ -199,6 +199,25 @@ a.tile:hover { border-color: var(--brand); text-decoration: none; transform: tra
 .bar-stack .bar:first-child { border-radius: 4px 4px 0 0; }
 .bar.later, .swatch.later { background: repeating-linear-gradient(135deg, #c9bdfb 0 3px, #e6e0fd 3px 6px); }
 .bar-slot:hover .bar.later, .bar-slot:focus-visible .bar.later { background: repeating-linear-gradient(135deg, #a892ff 0 3px, #d5ccfc 3px 6px); }
+.gate { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; background: var(--bg); }
+.gate-card { width: min(440px, 100%); }
+.biz-id { display: flex; flex-direction: column; gap: 2px; padding: 10px 8px 0; border-top: 1px solid #332c67; font-size: .82rem; }
+.biz-id small { color: #fff; font-weight: 600; }
+.biz-id .link { color: #b6a7ff; padding: 2px 0; text-align: left; white-space: normal; }
+.biz-id .link b { color: #fff; font-family: ui-monospace, Consolas, monospace; }
+.biz-id a { color: #b6a7ff; }
+.shop { min-height: 100vh; display: flex; flex-direction: column; background: #fffaf3; }
+.shop-hero { padding: clamp(40px, 7vw, 80px) clamp(16px, 5vw, 80px); background: linear-gradient(120deg, #7c2d12, #c2410c); color: #fff; }
+.shop-hero h1 { font-size: clamp(2.2rem, 5vw, 3.6rem); font-weight: 800; }
+.shop-hero p { margin: 10px 0 0; font-size: 1.1rem; }
+.shop-hero .shop-tag { display: inline-block; margin: 0 0 12px; padding: 3px 11px; border-radius: 99px; background: rgb(255 255 255 / .2); font-size: .8rem; font-weight: 600; }
+.shop-body { flex: 1; display: flex; flex-direction: column; gap: 20px; padding: clamp(20px, 4vw, 48px) clamp(16px, 5vw, 80px); }
+.shop .primary { background: #c2410c; border-color: #c2410c; }
+.shop .primary:hover:not(:disabled) { background: #9a3412; border-color: #9a3412; }
+.shop .tile.picked { border-color: #c2410c; box-shadow: 0 0 0 2px #c2410c; }
+.shop-done { max-width: 560px; }
+.shop-empty { padding: 80px 16px; text-align: center; }
+.shop-foot { padding: 18px; text-align: center; color: var(--muted); border-top: 1px solid var(--line); }
 .fact-note { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
 .warm-tag { background: var(--warn-bg); color: var(--warn); }
 .assigned { margin: 8px 0 0; font-weight: 600; }

@@ -1,7 +1,7 @@
 from django.conf import settings
 from django.db import models
 
-from catalog.models import PaymentTerm, Plan, Product, ProductVariant, Tax
+from catalog.models import PaymentTerm, Plan, Product, ProductVariant, Tax, business_field
 
 
 class Subscription(models.Model):
@@ -21,6 +21,7 @@ class Subscription(models.Model):
         OTHER = "other", "Something else"
 
     number = models.CharField(max_length=20, unique=True, null=True, editable=False)
+    business = business_field()
     customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="subscriptions")
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
     payment_term = models.ForeignKey(PaymentTerm, on_delete=models.PROTECT)
@@ -50,6 +51,9 @@ class Subscription(models.Model):
     class Meta:
         ordering = ["-id"]
         indexes = [
+            # Every list and report starts from one business, so each index leads with it.
+            models.Index(fields=["business", "state", "next_invoice_date"]),
+            models.Index(fields=["business", "state", "expiry_date"]),
             models.Index(fields=["state", "next_invoice_date"]),
             models.Index(fields=["state", "expiry_date"]),
             models.Index(fields=["customer", "state"]),
@@ -110,6 +114,7 @@ class Invoice(models.Model):
         CANCELLED = "cancelled", "Cancelled"
 
     number = models.CharField(max_length=20, unique=True, null=True, editable=False)
+    business = business_field()
     subscription = models.ForeignKey(Subscription, on_delete=models.PROTECT, related_name="invoices")
     customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="invoices")
     customer_name = models.CharField(max_length=200)
@@ -138,8 +143,9 @@ class Invoice(models.Model):
     class Meta:
         ordering = ["-id"]
         indexes = [
+            models.Index(fields=["business", "state", "due_date"]),
+            models.Index(fields=["business", "state", "invoice_date"]),
             models.Index(fields=["state", "due_date"]),
-            models.Index(fields=["state", "invoice_date"]),
             models.Index(fields=["customer", "state"]),
         ]
 
@@ -181,6 +187,7 @@ class Payment(models.Model):
         CHEQUE = "cheque", "Cheque"
         ONLINE = "online", "Online (Stripe)"
 
+    business = business_field()
     invoice = models.ForeignKey(Invoice, on_delete=models.PROTECT, related_name="payments")
     method = models.CharField(max_length=15, choices=Method.choices)
     amount = models.DecimalField(max_digits=14, decimal_places=2)
@@ -193,7 +200,7 @@ class Payment(models.Model):
 
     class Meta:
         ordering = ["-date", "-id"]
-        indexes = [models.Index(fields=["date", "method"])]
+        indexes = [models.Index(fields=["business", "date", "method"])]
         constraints = [models.CheckConstraint(condition=models.Q(amount__gt=0), name="payment_positive")]
 
 

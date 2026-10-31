@@ -18,6 +18,13 @@ class IsBackOffice(BasePermission):
         return request.user.is_authenticated and request.user.is_back_office
 
 
+class IsPlatform(BasePermission):
+    """The administrator and Brightloop's own staff, who see across every business."""
+
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_team and request.user.is_platform
+
+
 class AdminWriteTeamRead(BasePermission):
     """Admin manages the catalog. Staff can read it. Customers cannot see it."""
 

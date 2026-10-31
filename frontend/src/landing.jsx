@@ -180,7 +180,7 @@ function StagePanel({ id }) {
         <h4>Growth Monthly</h4>
         <PanelRows rows={[['Price', '₹2,499 / month'], ['Free trial', '14 days'], ['Brand: Odoo', '+ ₹560']]} />
         <div className="toggles">
-          {[['Can be paused', true], ['Renews automatically', true], ['Shown on pricing page', true], ['Closes on its own', false]].map(([name, on]) => (
+          {[['Can be paused', true], ['Renews automatically', true], ['Shown on pricing page', true],].map(([name, on]) => (
             <span key={name}><i className={on ? 'on' : ''} />{name}</span>
           ))}
         </div>
@@ -530,7 +530,7 @@ export function Landing({ user }) {
         <div className="foot-top">
           <div><span className="brand">Brightloop</span><p>The subscription backbone for businesses that earn every month.</p></div>
           <nav aria-label="Products"><h3>Products</h3><a href="#launch">Launch</a><a href="#scale">Scale</a><a href="#retain">Retain</a><a href="#acquire">Acquire</a><a href="#pricing">Pricing</a></nav>
-          <nav aria-label="Resources"><h3>Resources</h3><a href="#resources">Guides</a><a href="#faq">Questions</a><a href="#customers">Customers</a></nav>
+          <nav aria-label="Resources"><h3>Resources</h3><a href="#resources">Guides</a><a href="#faq">Questions</a><a href="#customers">Customers</a><Link to="/shop/mb7k2q">See a customer site</Link></nav>
           <div><h3>Works with</h3><p>Stripe</p><p>Twilio</p><p>Google sign-in</p></div>
           <nav aria-label="Account"><h3>Account</h3>{user ? <Link to="/">Open the app</Link> : <><Link to="/login">Log in</Link><Link to="/signup">Create an account</Link><Link to="/forgot-password">Reset password</Link></>}</nav>
         </div>

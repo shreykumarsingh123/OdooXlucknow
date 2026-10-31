@@ -1,6 +1,6 @@
 # Project plan
 
-**Product:** a platform a subscription business uses to manage its own subscribers: plans, billing, payments, support and sales. Brightloop is the first business on it.
+**Product:** Brightloop is a platform for many businesses. Each one runs its own plans, billing, payments, support and sales here, and Brightloop tracks the subscriptions made on their sites.
 
 Requirements are in [docs/ANALYSIS.md](docs/ANALYSIS.md), and the design is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
@@ -67,17 +67,51 @@ Live store connections, such as Shopify or WooCommerce, are not built. Exporting
 - Permissions are enforced on the server, and hiding a menu item is never the only check.
 - A customer never sees internal ticket notes.
 
-## Next: many businesses on one platform
+## Many businesses on one platform: complete
 
-Today, one deployment serves one business, and each business gets its own deployment and database. Isolation is simple, and nothing can leak between businesses.
+| # | Slice | Requirements |
+|---|-------|--------------|
+| 28 | Email OTP in place of the reset link, sent to the recovery address | R-49 |
+| 29 | The address decides the account type and where it lands | R-50 |
+| 30 | Business ID, team joining with owner approval, staff add and delete | R-51 |
+| 31 | One administrator, Brightloop staff, business owners and their staff | R-52 |
+| 32 | Every record belongs to one business, and no business can reach another's | R-53 |
+| 33 | Brightloop overview across all businesses, and managing users | R-54 |
+| 34 | Team chat per business, and admin chat with Brightloop | R-55 |
+| 35 | Public site per business, with Manbhwan Foods as the test site | R-56 |
+| 36 | Compulsory recovery email after login | R-57 |
 
-Serving many businesses from one deployment needs an `Organization` on every record, business signup, per-business Stripe keys through Stripe Connect, per-business branding, and tests that one business can never read another's data. This is a large, security-critical change, so it is its own project.
+### Who is who
+
+| Address | Account | Lands on |
+|---------|---------|----------|
+| `asha@admin.com` | The one administrator. A database rule allows only one | Brightloop overview |
+| `name@adminsale.com` | Brightloop sales | Sales page |
+| `name@support.com` | Brightloop customer care | Tickets |
+| `name@gmail.com` | Business owner, or a customer if they signed up with a Business ID | Owner's dashboard, or customer portal |
+| `nameBUSINESSID@sale.com` | That business's sales | Sales page |
+| `name.BUSINESSID@support.com` | That business's customer care | Tickets |
+
+Rules that keep this safe:
+
+- Nobody can sign up with a Brightloop address. Only the administrator creates them.
+- A team member joining with a Business ID stays locked until the owner approves them.
+- One address belongs to one business. A person cannot use the same address as a customer of two businesses.
+
+### Speed
+
+Every list and report starts from one business, so composite indexes lead with `business`. Reports use grouped SQL, and results are joined in hash maps. The slowest page measured 199 ms with 5,000 subscriptions.
+
+### Next
+
+- Each business's own Stripe account, through Stripe Connect. Today all test payments land in one Stripe test account.
+- A real API or script for businesses to report subscriptions made on their own sites. Today the hosted site at `/shop/BUSINESSID` does this.
 
 ## Needs the project owner
 
 | Item | Why |
 |------|-----|
-| SMTP settings in `.env` | Password reset, invite and invoice emails are written to files until these are set. The brief needs the reset link to reach the mailbox. |
+| SMTP settings in `.env` | Password codes and invoices are written to files until these are set. `.env.example` shows the Gmail settings. Until then, local development shows the code on screen. |
 | `TWILIO_FROM_NUMBER` | SMS stays off without a sender number. |
 | `GOOGLE_CLIENT_ID` | The Google button stays hidden until it is set. |
 | `STRIPE_WEBHOOK_SECRET` | Without it, a payment is recorded only when the customer returns to the site. |

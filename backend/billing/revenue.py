@@ -68,14 +68,14 @@ def invoice_schedule(invoice, today=None):
     ]
 
 
-def revenue_report(start=None, end=None, plan=None, period=None, today=None):
+def revenue_report(business_id, start=None, end=None, plan=None, period=None, today=None):
     today = today or timezone.localdate()
     this_month = month_start(today)
     first = month_start(start) if start else month_start(this_month - timedelta(days=330))
     last = month_start(end) if end else month_start(this_month + timedelta(days=190))
 
-    invoices = Invoice.objects.filter(state__in=ISSUED)
-    payments = Payment.objects.all()
+    invoices = Invoice.objects.filter(business_id=business_id, state__in=ISSUED)
+    payments = Payment.objects.filter(business_id=business_id)
     if plan:
         invoices = invoices.filter(subscription__plan_id=plan)
         payments = payments.filter(invoice__subscription__plan_id=plan)

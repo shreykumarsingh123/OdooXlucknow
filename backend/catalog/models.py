@@ -1,11 +1,17 @@
 from decimal import ROUND_HALF_UP, Decimal
 
+from django.conf import settings
 from django.core.validators import MinValueValidator
 from django.db import models
 from django.utils import timezone
 
 CENT = Decimal("0.01")
 NON_NEGATIVE = [MinValueValidator(Decimal("0"))]
+BUSINESS = settings.AUTH_USER_MODEL.split(".")[0] + ".Business"
+
+
+def business_field():
+    return models.ForeignKey(BUSINESS, on_delete=models.PROTECT, related_name="+")
 
 
 def money(value):
@@ -17,7 +23,8 @@ class Tax(models.Model):
         PERCENT = "percent", "Percentage"
         FIXED = "fixed", "Fixed per unit"
 
-    name = models.CharField(max_length=80, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=80)
     computation = models.CharField(max_length=10, choices=Computation.choices, default=Computation.PERCENT)
     rate = models.DecimalField(max_digits=10, decimal_places=2, validators=NON_NEGATIVE)
     is_active = models.BooleanField(default=True)
@@ -25,6 +32,7 @@ class Tax(models.Model):
     class Meta:
         ordering = ["name"]
         verbose_name_plural = "taxes"
+        constraints = [models.UniqueConstraint(fields=["business", "name"], name="uniq_tax_name")]
 
     def compute(self, base, quantity):
         if self.computation == self.Computation.PERCENT:
@@ -36,12 +44,14 @@ class Tax(models.Model):
 
 
 class PaymentTerm(models.Model):
-    name = models.CharField(max_length=80, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=80)
     due_days = models.PositiveIntegerField(default=0)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["due_days"]
+        constraints = [models.UniqueConstraint(fields=["business", "name"], name="uniq_term_name")]
 
     def __str__(self):
         return self.name
@@ -53,7 +63,8 @@ class Product(models.Model):
         ADDON = "addon", "Add-on"
         SERVICE = "service", "Service"
 
-    name = models.CharField(max_length=150, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=150)
     type = models.CharField(max_length=10, choices=Type.choices, default=Type.SOFTWARE, db_index=True)
     sales_price = models.DecimalField(max_digits=12, decimal_places=2, validators=NON_NEGATIVE)
     cost_price = models.DecimalField(max_digits=12, decimal_places=2, default=0, validators=NON_NEGATIVE)
@@ -63,6 +74,7 @@ class Product(models.Model):
 
     class Meta:
         ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["business", "name"], name="uniq_product_name")]
 
     def __str__(self):
         return self.name
@@ -89,7 +101,8 @@ class Plan(models.Model):
         MONTHLY = "monthly", "Monthly"
         YEARLY = "yearly", "Yearly"
 
-    name = models.CharField(max_length=150, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=150)
     price = models.DecimalField(max_digits=12, decimal_places=2, default=0, validators=NON_NEGATIVE)
     billing_period = models.CharField(max_length=10, choices=Period.choices, default=Period.MONTHLY, db_index=True)
     min_quantity = models.PositiveIntegerField(default=1)
@@ -106,11 +119,13 @@ class Plan(models.Model):
 
     class Meta:
         ordering = ["name"]
+        indexes = [models.Index(fields=["business", "is_public", "is_active"])]
         constraints = [
+            models.UniqueConstraint(fields=["business", "name"], name="uniq_plan_name"),
             models.CheckConstraint(
                 condition=models.Q(end_date__isnull=True) | models.Q(end_date__gte=models.F("start_date")),
                 name="plan_dates_ordered",
-            )
+            ),
         ]
 
     def available_on(self, day):
@@ -135,7 +150,8 @@ class Discount(models.Model):
         FREE_DAYS = "free_days", "Free days before the next invoice"
         PERK = "perk", "Other perk"
 
-    name = models.CharField(max_length=120, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=120)
     kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.PERCENT)
     value = models.DecimalField(max_digits=12, decimal_places=2, default=0, validators=NON_NEGATIVE)
     reward = models.CharField(max_length=10, choices=Reward.choices, default=Reward.DISCOUNT)
@@ -147,7 +163,7 @@ class Discount(models.Model):
     end_date = models.DateField(null=True, blank=True)
     usage_limit = models.PositiveIntegerField(null=True, blank=True, help_text="Leave empty for no limit.")
     # A discount with a code applies only to subscriptions that have redeemed it.
-    code = models.CharField(max_length=40, unique=True, null=True, blank=True)
+    code = models.CharField(max_length=40, null=True, blank=True)
     times_used = models.PositiveIntegerField(default=0, editable=False)
     products = models.ManyToManyField(Product, blank=True, related_name="discounts")
     subscriptions = models.ManyToManyField("billing.Subscription", blank=True, related_name="discounts")
@@ -155,8 +171,10 @@ class Discount(models.Model):
 
     class Meta:
         ordering = ["-start_date", "name"]
-        indexes = [models.Index(fields=["is_active", "start_date", "end_date"])]
+        indexes = [models.Index(fields=["business", "reward", "is_active", "start_date"])]
         constraints = [
+            models.UniqueConstraint(fields=["business", "name"], name="uniq_discount_name"),
+            models.UniqueConstraint(fields=["business", "code"], name="uniq_discount_code"),
             models.CheckConstraint(
                 condition=models.Q(end_date__isnull=True) | models.Q(end_date__gte=models.F("start_date")),
                 name="discount_dates_ordered",
@@ -179,13 +197,15 @@ class Discount(models.Model):
 
 
 class QuotationTemplate(models.Model):
-    name = models.CharField(max_length=150, unique=True)
+    business = business_field()
+    name = models.CharField(max_length=150)
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="templates")
     validity_days = models.PositiveIntegerField(default=30)
     is_active = models.BooleanField(default=True)
 
     class Meta:
         ordering = ["name"]
+        constraints = [models.UniqueConstraint(fields=["business", "name"], name="uniq_template_name")]
 
     def __str__(self):
         return self.name

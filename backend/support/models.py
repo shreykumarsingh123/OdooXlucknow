@@ -1,6 +1,8 @@
 from django.conf import settings
 from django.db import models
 
+from catalog.models import business_field
+
 
 class Ticket(models.Model):
     class Status(models.TextChoices):
@@ -14,6 +16,7 @@ class Ticket(models.Model):
         HIGH = "high", "High"
 
     number = models.CharField(max_length=20, unique=True, null=True, editable=False)
+    business = business_field()
     customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="tickets")
     subscription = models.ForeignKey("billing.Subscription", on_delete=models.SET_NULL, null=True, blank=True, related_name="tickets")
     subject = models.CharField(max_length=200)
@@ -27,7 +30,7 @@ class Ticket(models.Model):
 
     class Meta:
         ordering = ["-updated_at"]
-        indexes = [models.Index(fields=["status", "updated_at"]), models.Index(fields=["customer", "status"])]
+        indexes = [models.Index(fields=["business", "status", "updated_at"]), models.Index(fields=["customer", "status"])]
 
     def __str__(self):
         return self.number or f"Ticket {self.pk}"
@@ -46,9 +49,26 @@ class TicketMessage(models.Model):
 
 
 class TeamMessage(models.Model):
+    """A business's private team chat."""
+
+    business = business_field()
     author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
     body = models.TextField()
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         ordering = ["-id"]
+        indexes = [models.Index(fields=["business", "id"])]
+
+
+class AdminMessage(models.Model):
+    """The conversation between one business and Brightloop."""
+
+    business = business_field()
+    author = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    body = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+        indexes = [models.Index(fields=["business", "id"])]

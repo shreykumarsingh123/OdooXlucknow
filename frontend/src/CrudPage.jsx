@@ -89,7 +89,7 @@ function RecordForm({ config, record, onClose, onSaved }) {
     const body = {}
     for (const field of config.fields) {
       const value = values[field.name]
-      body[field.name] = value === '' && !['text', 'textarea', 'select-optional', undefined].includes(field.type) ? null : value
+      body[field.name] = value === '' && !['text', 'textarea', 'select-optional', 'password', undefined].includes(field.type) ? null : value
     }
     try {
       if (record) await api.put(`${config.path}${record.id}/`, body)

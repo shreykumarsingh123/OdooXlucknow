@@ -5,6 +5,7 @@ from rest_framework import serializers
 
 from accounts.models import User
 from catalog.models import PaymentTerm, Product, ProductVariant, QuotationTemplate, Tax
+from config.tenancy import CustomerField, TenantScoped
 
 from .models import (
     Invoice,
@@ -72,7 +73,7 @@ def invoice_actions(invoice, user):
     return actions
 
 
-class SubscriptionListSerializer(serializers.ModelSerializer):
+class SubscriptionListSerializer(TenantScoped, serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.display_name", read_only=True)
     plan_name = serializers.CharField(source="plan.name", read_only=True)
 
@@ -84,7 +85,7 @@ class SubscriptionListSerializer(serializers.ModelSerializer):
         ]
 
 
-class LineInSerializer(serializers.Serializer):
+class LineInSerializer(TenantScoped, serializers.Serializer):
     product = serializers.PrimaryKeyRelatedField(queryset=Product.objects.filter(is_active=True))
     variant = serializers.PrimaryKeyRelatedField(queryset=ProductVariant.objects.all(), required=False, allow_null=True)
     quantity = serializers.IntegerField(min_value=1)
@@ -98,7 +99,7 @@ class LineInSerializer(serializers.Serializer):
         return attrs
 
 
-class LineOutSerializer(serializers.ModelSerializer):
+class LineOutSerializer(TenantScoped, serializers.ModelSerializer):
     taxes = serializers.SlugRelatedField(slug_field="name", many=True, read_only=True)
     tax_ids = serializers.PrimaryKeyRelatedField(source="taxes", many=True, read_only=True)
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
@@ -115,7 +116,7 @@ class LineOutSerializer(serializers.ModelSerializer):
         return bool(line.product_id and line.product.type == "addon")
 
 
-class EventSerializer(serializers.ModelSerializer):
+class EventSerializer(TenantScoped, serializers.ModelSerializer):
     actor_name = serializers.SerializerMethodField()
 
     class Meta:
@@ -126,7 +127,7 @@ class EventSerializer(serializers.ModelSerializer):
         return event.actor.display_name if event.actor else "Brightloop"
 
 
-class SubscriptionDetailSerializer(serializers.ModelSerializer):
+class SubscriptionDetailSerializer(TenantScoped, serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.display_name", read_only=True)
     plan_name = serializers.CharField(source="plan.name", read_only=True)
     billing_period = serializers.CharField(source="plan.billing_period", read_only=True)
@@ -163,14 +164,14 @@ class SubscriptionDetailSerializer(serializers.ModelSerializer):
         return EventSerializer(sub.events.select_related("actor")[:30], many=True).data
 
 
-class AdjustSerializer(serializers.Serializer):
+class AdjustSerializer(TenantScoped, serializers.Serializer):
     kind = serializers.ChoiceField(choices=["credit", "charge"])
     amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
     note = serializers.CharField(max_length=200)
 
 
-class SubscriptionWriteSerializer(serializers.ModelSerializer):
-    customer = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(role=User.Role.CUSTOMER, is_active=True))
+class SubscriptionWriteSerializer(TenantScoped, serializers.ModelSerializer):
+    customer = CustomerField()
     lines = LineInSerializer(many=True, required=False)
     salesperson = serializers.PrimaryKeyRelatedField(
         queryset=User.objects.filter(role=User.Role.STAFF, department=User.Department.SALES, is_active=True), required=False, allow_null=True
@@ -181,15 +182,15 @@ class SubscriptionWriteSerializer(serializers.ModelSerializer):
         fields = ["customer", "plan", "payment_term", "start_date", "expiry_date", "salesperson", "lines"]
 
 
-class FromTemplateSerializer(serializers.Serializer):
+class FromTemplateSerializer(TenantScoped, serializers.Serializer):
     template = serializers.PrimaryKeyRelatedField(queryset=QuotationTemplate.objects.filter(is_active=True))
-    customer = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(role=User.Role.CUSTOMER, is_active=True))
+    customer = CustomerField()
     payment_term = serializers.PrimaryKeyRelatedField(queryset=PaymentTerm.objects.filter(is_active=True))
     start_date = serializers.DateField()
     expiry_date = serializers.DateField()
 
 
-class InvoiceListSerializer(serializers.ModelSerializer):
+class InvoiceListSerializer(TenantScoped, serializers.ModelSerializer):
     amount_due = serializers.DecimalField(max_digits=14, decimal_places=2, read_only=True)
     subscription_number = serializers.CharField(source="subscription.number", read_only=True)
     is_overdue = serializers.SerializerMethodField()
@@ -205,19 +206,19 @@ class InvoiceListSerializer(serializers.ModelSerializer):
         return invoice.state == I.CONFIRMED and invoice.due_date < self.context["today"]
 
 
-class InvoiceLineSerializer(serializers.ModelSerializer):
+class InvoiceLineSerializer(TenantScoped, serializers.ModelSerializer):
     class Meta:
         model = InvoiceLine
         fields = ["id", "description", "quantity", "unit_price", "discount_amount", "tax_names", "tax_amount", "amount"]
 
 
-class InvoiceDiscountSerializer(serializers.ModelSerializer):
+class InvoiceDiscountSerializer(TenantScoped, serializers.ModelSerializer):
     class Meta:
         model = InvoiceDiscount
         fields = ["name", "amount"]
 
 
-class PaymentSerializer(serializers.ModelSerializer):
+class PaymentSerializer(TenantScoped, serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="invoice.customer_name", read_only=True)
 
@@ -249,13 +250,13 @@ class InvoiceDetailSerializer(InvoiceListSerializer):
         return invoice_actions(invoice, self.context["request"].user)
 
 
-class PaymentRequestInSerializer(serializers.Serializer):
+class PaymentRequestInSerializer(TenantScoped, serializers.Serializer):
     method = serializers.ChoiceField(choices=[c for c in Payment.Method.choices if c[0] != Payment.Method.ONLINE])
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
     reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
 
 
-class PaymentRequestSerializer(serializers.ModelSerializer):
+class PaymentRequestSerializer(TenantScoped, serializers.ModelSerializer):
     invoice_number = serializers.CharField(source="invoice.number", read_only=True)
     customer_name = serializers.CharField(source="customer.display_name", read_only=True)
     method_label = serializers.CharField(source="get_method_display", read_only=True)
@@ -269,7 +270,7 @@ class PaymentRequestSerializer(serializers.ModelSerializer):
         ]
 
 
-class SalesTargetSerializer(serializers.ModelSerializer):
+class SalesTargetSerializer(TenantScoped, serializers.ModelSerializer):
     salesperson = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(role=User.Role.STAFF, department=User.Department.SALES))
     salesperson_name = serializers.CharField(source="salesperson.display_name", read_only=True)
     amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))

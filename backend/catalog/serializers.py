@@ -1,17 +1,30 @@
 from django.db import transaction
 from rest_framework import serializers
-from rest_framework.validators import UniqueValidator
+
+from config.tenancy import TenantScoped
 
 from .models import Discount, PaymentTerm, Plan, Product, ProductVariant, QuotationTemplate, QuotationTemplateLine, Tax
 
 
-class TaxSerializer(serializers.ModelSerializer):
+class UniqueName:
+    """Names are unique within one business. Two businesses may both sell a plan called Monthly."""
+
+    def validate_name(self, value):
+        rows = self.Meta.model.objects.filter(business_id=self.context["request"].user.business_id, name__iexact=value)
+        if self.instance:
+            rows = rows.exclude(pk=self.instance.pk)
+        if rows.exists():
+            raise serializers.ValidationError("This name is already in use.")
+        return value
+
+
+class TaxSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
     class Meta:
         model = Tax
         fields = ["id", "name", "computation", "rate", "is_active"]
 
 
-class PaymentTermSerializer(serializers.ModelSerializer):
+class PaymentTermSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
     class Meta:
         model = PaymentTerm
         fields = ["id", "name", "due_days", "is_active"]
@@ -25,7 +38,7 @@ class VariantSerializer(serializers.ModelSerializer):
         fields = ["id", "attribute", "value", "extra_price"]
 
 
-class ProductSerializer(serializers.ModelSerializer):
+class ProductSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
     variants = VariantSerializer(many=True, required=False)
 
     class Meta:
@@ -64,7 +77,7 @@ class ProductSerializer(serializers.ModelSerializer):
         stale.filter(subscriptionline__isnull=True, quotationtemplateline__isnull=True).delete()
 
 
-class PlanSerializer(serializers.ModelSerializer):
+class PlanSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
     class Meta:
         model = Plan
         fields = [
@@ -80,11 +93,8 @@ class PlanSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class DiscountSerializer(serializers.ModelSerializer):
-    code = serializers.CharField(
-        max_length=40, required=False, allow_blank=True, allow_null=True,
-        validators=[UniqueValidator(queryset=Discount.objects.all(), lookup="iexact", message="This code is already in use.")],
-    )
+class DiscountSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
+    code = serializers.CharField(max_length=40, required=False, allow_blank=True, allow_null=True)
 
     value = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=0, required=False, allow_null=True)
 
@@ -97,7 +107,14 @@ class DiscountSerializer(serializers.ModelSerializer):
         read_only_fields = ["times_used"]
 
     def validate_code(self, value):
-        return (value or "").strip().upper() or None
+        code = (value or "").strip().upper() or None
+        if code:
+            rows = Discount.objects.filter(business_id=self.context["request"].user.business_id, code__iexact=code)
+            if self.instance:
+                rows = rows.exclude(pk=self.instance.pk)
+            if rows.exists():
+                raise serializers.ValidationError("This code is already in use.")
+        return code
 
     def validate(self, attrs):
         def get(key):
@@ -130,7 +147,7 @@ class DiscountSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class TemplateLineSerializer(serializers.ModelSerializer):
+class TemplateLineSerializer(TenantScoped, serializers.ModelSerializer):
     class Meta:
         model = QuotationTemplateLine
         fields = ["product", "variant", "quantity"]
@@ -142,7 +159,7 @@ class TemplateLineSerializer(serializers.ModelSerializer):
         return attrs
 
 
-class QuotationTemplateSerializer(serializers.ModelSerializer):
+class QuotationTemplateSerializer(TenantScoped, UniqueName, serializers.ModelSerializer):
     lines = TemplateLineSerializer(many=True)
 
     class Meta:

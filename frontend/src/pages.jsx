@@ -565,8 +565,9 @@ function CloseModal({ sub, canPause, onClose, send }) {
 }
 
 function ChangePlanModal({ sub, team, onClose, send }) {
-  const { data } = useLoad(team ? '/plans/?page_size=100' : '/public/plans/')
-  const all = data?.results || data || []
+  const { user } = useAuth()
+  const { data } = useLoad(team ? '/plans/?page_size=100' : `/public/sites/${user.business.code}/`)
+  const all = data?.results || data?.plans || []
   const options = all.filter((p) => p.billing_period === sub.billing_period && p.id !== sub.plan && p.is_active !== false)
   const [plan, setPlan] = useState('')
   const chosen = options.find((p) => p.id === Number(plan))
@@ -634,7 +635,9 @@ function Timeline({ events }) {
 
 export function BrowsePlans() {
   const navigate = useNavigate()
-  const { data, error, reload } = useLoad('/public/plans/')
+  const { user } = useAuth()
+  const { data: site, error, reload } = useLoad(`/public/sites/${user.business.code}/`)
+  const data = site?.plans
   const [problem, setProblem] = useState(null)
   const [busy, setBusy] = useState(null)
   const start = async (plan) => {
