@@ -52,6 +52,16 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | R-25 | Overdue reminders by email, and by Twilio SMS where a phone and sender exist | Spaced and capped; paid invoices are not chased |
 | R-26 | Annual recurring revenue and churn on the finance view | Numbers match a manual count |
 | R-27 | Sign in with Google | Verified Google email signs in; new users become customers; unverified refused |
+| R-28 | Public pricing, and customers start a public plan online | No login to see prices; private plans hidden; a repeat start refused |
+| R-29 | Free trials per plan | First invoice after the trial; one trial per customer per plan; not counted in recurring revenue |
+| R-30 | Change plan with proration and credit balance | Upgrade charges the unused difference once; downgrade credits the next invoices; cancelling an invoice returns its credit |
+| R-31 | Promo codes | A code applies only after redeeming; bad, expired or repeated codes refused |
+| R-32 | Admin one-off charges and credits | Staff and customers get 403 |
+| R-33 | Pause offered before cancelling, with a cancellation reason | Reason appears in the churn report |
+| R-34 | Subscription activity timeline | Shows what happened, who did it and when |
+| R-35 | Revenue per customer, recurring revenue by plan, overdue aging, churn reasons, CSV exports | Numbers match a manual count; exports are team-only and defuse spreadsheet formulas |
+| R-36 | Customer profile page | Customers edit their own details |
+| R-37 | Animated public landing page before the app | Shown at `/` when logged out; prices come from the API; reduced motion respected |
 
 ## Assumptions
 
@@ -68,3 +78,6 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | A-09 | Staff record offline payments; online payment arrived later as R-24 | |
 | A-10 | Printing uses a browser print page; a PDF file is not requested | |
 | A-11 | Pause is an extra state beside Active, since the brief allows pausing | |
+| A-12 | A customer starting a public plan online goes straight to Active, for 12 months, on the shortest payment term. Only plans with a price and a minimum quantity of 1 qualify | `start_plan` service |
+| A-13 | Plan changes take effect at once, only between plans with the same billing period, and prorate the plan fee by days left in the billed period | `change_plan` service |
+| A-14 | One-off charges and credits are admin-only, in line with discount rules | One permission check |

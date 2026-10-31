@@ -194,6 +194,33 @@ a.tile:hover { border-color: var(--brand); text-decoration: none; transform: tra
 .totals dd { margin: 0; font-variant-numeric: tabular-nums; }
 .totals .grand { font-weight: 700; border-top: 1px solid var(--line); color: var(--ink); font-size: 1.04rem; }
 
+.page-in { animation: rise .32s cubic-bezier(.2, .8, .2, 1); }
+.auth-panel .inner { animation: rise .4s cubic-bezier(.2, .8, .2, 1); }
+.auth-hero .brand:hover { text-decoration: none; }
+.export-row { justify-content: flex-end; font-size: .9rem; }
+.export-row .muted { margin: 0; }
+.export-row button { padding: 5px 11px; }
+.grid-3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 18px; align-items: start; }
+.small-note { font-size: .84rem; margin: 0 0 12px; }
+.barlist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.barlist li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 5px 10px; font-size: .9rem; }
+.barlist b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.barlist i { grid-column: 1 / -1; height: 8px; border-radius: 4px; background: var(--muted-bg); overflow: hidden; }
+.barlist u { display: block; height: 100%; min-width: 4px; border-radius: 4px; background: var(--brand); text-decoration: none; transition: width .6s cubic-bezier(.2, .8, .2, 1); }
+.timeline { list-style: none; margin: 8px 0 0; padding: 0 0 0 16px; border-left: 2px solid var(--line); display: flex; flex-direction: column; gap: 14px; }
+.timeline li { position: relative; display: flex; flex-direction: column; gap: 2px; }
+.timeline li::before { content: ''; position: absolute; left: -22px; top: 6px; width: 10px; height: 10px; border-radius: 50%; background: var(--brand); box-shadow: 0 0 0 3px var(--card); }
+.timeline b { font-weight: 600; }
+.timeline small { color: var(--muted); }
+.trial-tag { margin-left: 6px; padding: 2px 8px; border-radius: 99px; background: var(--brand-soft); color: var(--brand-dark); font-weight: 600; }
+.plan-tiles { grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); }
+.plan-tiles h2 { margin: 2px 0; font-size: 1.1rem; }
+.plan-tiles button { margin-top: 10px; }
+.narrow { max-width: 560px; }
+.who-links { grid-column: 2; display: flex; gap: 12px; align-items: center; padding-top: 4px; }
+.who-links a { color: #b6a7ff; font-weight: 550; }
+.who .who-links .link { padding: 0; }
+
 @media (max-width: 860px) {
   .shell { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; height: auto; padding: 14px; }

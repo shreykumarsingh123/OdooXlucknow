@@ -6,7 +6,7 @@ from rest_framework import serializers
 from accounts.models import User
 from catalog.models import PaymentTerm, Product, ProductVariant, QuotationTemplate, Tax
 
-from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionLine
+from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionEvent, SubscriptionLine
 
 S = Subscription.State
 I = Invoice.State
@@ -23,14 +23,19 @@ def subscription_actions(sub, user):
         elif sub.state == S.CONFIRMED:
             actions.append("activate")
     if sub.state == S.ACTIVE:
+        actions.append("change_plan")
         if plan.pausable:
             actions.append("pause")
         if plan.renewable:
             actions.append("renew")
     if sub.state == S.PAUSED:
         actions.append("resume")
-    if sub.state in (S.ACTIVE, S.PAUSED) and plan.closable:
-        actions.append("close")
+    if sub.state in (S.ACTIVE, S.PAUSED):
+        actions.append("redeem")
+        if user.is_admin:
+            actions.append("adjust")
+        if plan.closable:
+            actions.append("close")
     return actions
 
 
@@ -58,7 +63,7 @@ class SubscriptionListSerializer(serializers.ModelSerializer):
         model = Subscription
         fields = [
             "id", "number", "customer", "customer_name", "plan", "plan_name", "start_date", "expiry_date",
-            "state", "next_invoice_date", "recurring_total",
+            "state", "next_invoice_date", "recurring_total", "trial_ends",
         ]
 
 
@@ -93,6 +98,17 @@ class LineOutSerializer(serializers.ModelSerializer):
         return bool(line.product_id and line.product.type == "addon")
 
 
+class EventSerializer(serializers.ModelSerializer):
+    actor_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = SubscriptionEvent
+        fields = ["id", "message", "actor_name", "created_at"]
+
+    def get_actor_name(self, event):
+        return event.actor.display_name if event.actor else "Brightloop"
+
+
 class SubscriptionDetailSerializer(serializers.ModelSerializer):
     customer_name = serializers.CharField(source="customer.display_name", read_only=True)
     plan_name = serializers.CharField(source="plan.name", read_only=True)
@@ -100,17 +116,28 @@ class SubscriptionDetailSerializer(serializers.ModelSerializer):
     payment_term_name = serializers.CharField(source="payment_term.name", read_only=True)
     lines = LineOutSerializer(many=True, read_only=True)
     allowed_actions = serializers.SerializerMethodField()
+    promotions = serializers.SlugRelatedField(source="discounts", slug_field="name", many=True, read_only=True)
+    events = serializers.SerializerMethodField()
 
     class Meta:
         model = Subscription
         fields = [
             "id", "number", "customer", "customer_name", "plan", "plan_name", "billing_period", "payment_term",
             "payment_term_name", "start_date", "expiry_date", "state", "quotation_valid_until", "next_invoice_date",
-            "recurring_total", "closed_at", "lines", "allowed_actions",
+            "recurring_total", "closed_at", "close_reason", "trial_ends", "credit_balance", "promotions", "events", "lines", "allowed_actions",
         ]
 
     def get_allowed_actions(self, sub):
         return subscription_actions(sub, self.context["request"].user)
+
+    def get_events(self, sub):
+        return EventSerializer(sub.events.select_related("actor")[:30], many=True).data
+
+
+class AdjustSerializer(serializers.Serializer):
+    kind = serializers.ChoiceField(choices=["credit", "charge"])
+    amount = serializers.DecimalField(max_digits=12, decimal_places=2, min_value=Decimal("0.01"))
+    note = serializers.CharField(max_length=200)
 
 
 class SubscriptionWriteSerializer(serializers.ModelSerializer):
@@ -177,7 +204,7 @@ class InvoiceDetailSerializer(InvoiceListSerializer):
 
     class Meta(InvoiceListSerializer.Meta):
         fields = InvoiceListSerializer.Meta.fields + [
-            "reminder_count", "last_reminder_at", "customer_email", "customer_address", "period_start", "period_end", "subtotal", "discount_total", "tax_total",
+            "reminder_count", "last_reminder_at", "customer_email", "customer_address", "period_start", "period_end", "subtotal", "discount_total", "tax_total", "credit_applied", "is_adjustment",
             "lines", "discounts", "payments", "allowed_actions",
         ]
 

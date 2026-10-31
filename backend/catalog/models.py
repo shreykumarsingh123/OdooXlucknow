@@ -100,6 +100,8 @@ class Plan(models.Model):
     closable = models.BooleanField(default=True, help_text="Can be closed early.")
     pausable = models.BooleanField(default=False, help_text="Can be paused.")
     renewable = models.BooleanField(default=True, help_text="Can be renewed.")
+    trial_days = models.PositiveIntegerField(default=0, help_text="Free days before the first invoice.")
+    is_public = models.BooleanField(default=False, help_text="Shown on the pricing page and in the customer portal.")
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -136,6 +138,8 @@ class Discount(models.Model):
     start_date = models.DateField()
     end_date = models.DateField(null=True, blank=True)
     usage_limit = models.PositiveIntegerField(null=True, blank=True, help_text="Leave empty for no limit.")
+    # A discount with a code applies only to subscriptions that have redeemed it.
+    code = models.CharField(max_length=40, unique=True, null=True, blank=True)
     times_used = models.PositiveIntegerField(default=0, editable=False)
     products = models.ManyToManyField(Product, blank=True, related_name="discounts")
     subscriptions = models.ManyToManyField("billing.Subscription", blank=True, related_name="discounts")

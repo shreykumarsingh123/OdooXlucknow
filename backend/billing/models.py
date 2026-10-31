@@ -13,6 +13,13 @@ class Subscription(models.Model):
         PAUSED = "paused", "Paused"
         CLOSED = "closed", "Closed"
 
+    class CloseReason(models.TextChoices):
+        TOO_EXPENSIVE = "too_expensive", "Too expensive"
+        MISSING_FEATURES = "missing_features", "Missing features"
+        NOT_USING = "not_using", "Not using it enough"
+        SWITCHED = "switched", "Switched to another product"
+        OTHER = "other", "Something else"
+
     number = models.CharField(max_length=20, unique=True, null=True, editable=False)
     customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="subscriptions")
     plan = models.ForeignKey(Plan, on_delete=models.PROTECT, related_name="subscriptions")
@@ -25,6 +32,11 @@ class Subscription(models.Model):
     # Stored so that lists and reports need no per-row line queries.
     recurring_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     closed_at = models.DateField(null=True, blank=True)
+    close_reason = models.CharField(max_length=20, choices=CloseReason.choices, blank=True)
+    close_note = models.CharField(max_length=255, blank=True)
+    trial_ends = models.DateField(null=True, blank=True)
+    # Owed to the customer, for example after a downgrade. Taken off the next invoices.
+    credit_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -39,8 +51,23 @@ class Subscription(models.Model):
             models.CheckConstraint(condition=models.Q(expiry_date__gte=models.F("start_date")), name="sub_dates_ordered")
         ]
 
+    @property
+    def billing_anchor(self):
+        """The day of the month invoices fall on. A trial moves it to the day the trial ends."""
+        return self.trial_ends or self.start_date
+
     def __str__(self):
         return self.number or f"Subscription {self.pk}"
+
+
+class SubscriptionEvent(models.Model):
+    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name="events")
+    message = models.CharField(max_length=255)
+    actor = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
 
 
 class SubscriptionLine(models.Model):
@@ -90,7 +117,10 @@ class Invoice(models.Model):
     subtotal = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     discount_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     tax_total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    credit_applied = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     total = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    # A one-off charge, such as a prorated upgrade, outside the regular billing periods.
+    is_adjustment = models.BooleanField(default=False)
     amount_paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     sent_at = models.DateTimeField(null=True, blank=True)
     reminder_count = models.PositiveSmallIntegerField(default=0)

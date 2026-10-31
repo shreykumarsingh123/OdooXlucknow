@@ -1,10 +1,11 @@
 import { createContext, StrictMode, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
-import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useNavigate, useSearchParams } from 'react-router-dom'
+import { BrowserRouter, Link, Navigate, NavLink, Outlet, Route, Routes, useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { api, tokens } from './api'
 import { CrudPage } from './CrudPage'
 import * as configs from './configs'
-import { Dashboard, InvoiceDetail, Invoices, Payments, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
+import { Landing } from './landing'
+import { BrowsePlans, Dashboard, InvoiceDetail, Invoices, Payments, Profile, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
 import './styles.css'
 import { ErrorBox, Field, ToastProvider } from './ui'
 
@@ -42,7 +43,7 @@ function AuthCard({ title, children, footer }) {
   return (
     <main className="auth">
       <aside className="auth-hero">
-        <p className="brand">Brightloop</p>
+        <Link className="brand" to="/">Brightloop</Link>
         <h2>Run plans, subscriptions and recurring billing in one place.</h2>
         <ul>
           <li>Invoices created from every subscription, on time</li>
@@ -146,12 +147,13 @@ function Login() {
 function Signup() {
   const { login } = useAuth()
   const navigate = useNavigate()
+  const [params] = useSearchParams()
   const [form, setForm] = useState({ email: '', password: '', first_name: '', last_name: '', company: '', phone: '' })
   const set = (name) => (e) => setForm((f) => ({ ...f, [name]: e.target.value }))
   const { error, busy, submit } = useSubmit(async () => {
     await api.post('/auth/signup/', form)
     await login(form.email, form.password)
-    navigate('/')
+    navigate(params.get('next') === 'plans' ? '/browse-plans' : '/')
   })
   return (
     <AuthCard title="Create your account" footer={<>Already registered? <Link to="/login">Sign in</Link></>}>
@@ -217,6 +219,7 @@ const ICONS = {
   '/customers': 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
   '/products': 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8',
   '/plans': 'M4 6h16M4 12h16M4 18h10',
+  '/browse-plans': 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8',
   '/templates': 'M4 3h16v18H4zM8 8h8M8 12h8M8 16h5',
   '/taxes': 'M19 5L5 19M7 9a2 2 0 1 0 0-4 2 2 0 0 0 0 4M17 19a2 2 0 1 0 0-4 2 2 0 0 0 0 4',
   '/discounts': 'M3 12V3h9l9 9-9 9zM8 8h.01',
@@ -237,13 +240,14 @@ const CATALOG = [['/products', 'Products'], ['/plans', 'Plans'], ['/templates', 
 const NAV = {
   admin: [['Billing', BILLING], ['Setup', [...CATALOG, ['/staff', 'Staff']]]],
   staff: [['Billing', BILLING], ['Reference', CATALOG]],
-  customer: [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices']]]],
+  customer: [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices'], ['/browse-plans', 'Browse plans']]]],
 }
 
 function Shell() {
   const { user, logout } = useAuth()
   const [open, setOpen] = useState(false)
-  if (!user) return <Navigate to="/login" replace />
+  const { pathname } = useLocation()
+  if (!user) return pathname === '/' ? <Landing /> : <Navigate to="/login" replace />
   return (
     <div className="shell">
       <aside className={`side no-print ${open ? 'open' : ''}`}>
@@ -259,9 +263,9 @@ function Shell() {
             </div>
           ))}
         </nav>
-        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{user.role}</small><button className="link" onClick={logout}>Sign out</button></div>
+        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{user.role}</small><span className="who-links"><Link to="/profile">Profile</Link><button className="link" onClick={logout}>Sign out</button></span></div>
       </aside>
-      <main className="content"><Outlet /></main>
+      <main className="content"><div className="page-in" key={pathname}><Outlet /></div></main>
     </div>
   )
 }
@@ -279,6 +283,11 @@ function Home() {
 const TEAM = ['admin', 'staff']
 const team = (element) => <Require roles={TEAM}>{element}</Require>
 
+function Welcome() {
+  const { user } = useAuth()
+  return <Landing user={user} />
+}
+
 function NotFound() {
   return <section><h1>Page not found</h1><p><Link to="/">Go to the start page</Link></p></section>
 }
@@ -286,12 +295,15 @@ function NotFound() {
 function App() {
   return (
     <Routes>
+      <Route path="/welcome" element={<Welcome />} />
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<Signup />} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route element={<Shell />}>
         <Route index element={<Home />} />
+        <Route path="profile" element={<Profile />} />
+        <Route path="browse-plans" element={<Require roles={['customer']}><BrowsePlans /></Require>} />
         <Route path="subscriptions" element={<Subscriptions />} />
         <Route path="subscriptions/new" element={team(<SubscriptionForm />)} />
         <Route path="subscriptions/:id" element={<SubscriptionDetail />} />

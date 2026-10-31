@@ -1,11 +1,13 @@
+import csv
 import logging
 from datetime import timedelta
 from decimal import Decimal
 
 import stripe
 from django.conf import settings
-from django.db.models import Case, Count, DecimalField, ExpressionWrapper, F, Sum, Value, When
+from django.db.models import Case, Count, DecimalField, ExpressionWrapper, F, Q, Sum, Value, When
 from django.db.models.functions import TruncMonth
+from django.http import StreamingHttpResponse
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from django_filters import rest_framework as filters
@@ -14,6 +16,7 @@ from rest_framework.decorators import action, api_view, authentication_classes, 
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+from rest_framework.throttling import ScopedRateThrottle
 
 from accounts.permissions import IsTeam
 from catalog.models import Plan, money
@@ -22,6 +25,7 @@ from config.api import Conflict
 from . import services
 from .models import Invoice, Payment, Subscription
 from .serializers import (
+    AdjustSerializer,
     FromTemplateSerializer,
     InvoiceDetailSerializer,
     InvoiceListSerializer,
@@ -50,6 +54,7 @@ class SubscriptionFilter(filters.FilterSet):
 
 class SubscriptionViewSet(viewsets.ModelViewSet):
     filterset_class = SubscriptionFilter
+    throttle_scope = "auth"  # used only by actions that opt in to ScopedRateThrottle
     search_fields = ["number", "customer__email", "customer__company", "customer__first_name", "plan__name"]
     ordering_fields = ["id", "number", "start_date", "expiry_date", "next_invoice_date", "recurring_total"]
 
@@ -105,43 +110,80 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         form.is_valid(raise_exception=True)
         return self._render(services.subscription_from_template(**form.validated_data).pk, 201)
 
-    def _team_transition(self, func):
+    def _team_transition(self, func, message):
         self._team_only()
-        func(self.get_object().pk)
-        return self._render(self.kwargs["pk"])
+        pk = self.get_object().pk
+        func(pk)
+        services.log_event(pk, message, self.request.user)
+        return self._render(pk)
 
     @action(detail=True, methods=["post"])
     def quote(self, request, pk=None):
-        return self._team_transition(services.send_quotation)
+        return self._team_transition(services.send_quotation, "Quotation sent")
 
     @action(detail=True, methods=["post"])
     def confirm(self, request, pk=None):
-        return self._team_transition(services.confirm)
+        return self._team_transition(services.confirm, "Confirmed")
 
     @action(detail=True, methods=["post"])
     def activate(self, request, pk=None):
-        return self._team_transition(services.activate)
+        return self._team_transition(services.activate, "Activated")
 
     # Customers may run these on their own subscriptions. get_object() applies the ownership scope.
-    def _owner_transition(self, func):
-        func(self.get_object().pk)
-        return self._render(self.kwargs["pk"])
+    def _owner_transition(self, func, message):
+        pk = self.get_object().pk
+        func(pk)
+        services.log_event(pk, message, self.request.user)
+        return self._render(pk)
 
     @action(detail=True, methods=["post"])
     def pause(self, request, pk=None):
-        return self._owner_transition(services.pause)
+        return self._owner_transition(services.pause, "Paused")
 
     @action(detail=True, methods=["post"])
     def resume(self, request, pk=None):
-        return self._owner_transition(services.resume)
+        return self._owner_transition(services.resume, "Resumed")
 
     @action(detail=True, methods=["post"])
     def close(self, request, pk=None):
-        return self._owner_transition(services.close)
+        reason, note = str(request.data.get("reason", "")), request.data.get("note", "")
+        return self._owner_transition(lambda pk: services.close(pk, reason, note), "Closed" + (f": {Subscription.CloseReason(reason).label}" if reason in Subscription.CloseReason.values else ""))
+
+    @action(detail=False, methods=["post"])
+    def start(self, request):
+        if request.user.is_team:
+            raise PermissionDenied("Only customers can start a plan online.")
+        return self._render(services.start_plan(request.user, request.data.get("plan")).pk, 201)
+
+    @action(detail=True, methods=["post"])
+    def change_plan(self, request, pk=None):
+        sub = self.get_object()
+        plans = Plan.objects.all() if request.user.is_team else Plan.objects.filter(is_public=True)
+        plan = plans.filter(pk=request.data.get("plan")).first() if str(request.data.get("plan", "")).isdigit() else None
+        if plan is None:
+            raise serializers.ValidationError({"plan": ["Choose a plan."]})
+        services.change_plan(sub.pk, plan, request.user)
+        return self._render(sub.pk)
+
+    @action(detail=True, methods=["post"], throttle_classes=[ScopedRateThrottle])
+    def redeem(self, request, pk=None):
+        sub = self.get_object()
+        services.redeem_code(sub.pk, request.data.get("code", ""), request.user)
+        return self._render(sub.pk)
+
+    @action(detail=True, methods=["post"])
+    def adjust(self, request, pk=None):
+        if not request.user.is_admin:
+            raise PermissionDenied("Only the admin can do this.")
+        form = AdjustSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        sub = self.get_object()
+        services.adjust_balance(sub.pk, actor=request.user, **form.validated_data)
+        return self._render(sub.pk)
 
     @action(detail=True, methods=["post"])
     def renew(self, request, pk=None):
-        return self._owner_transition(services.renew)
+        return self._owner_transition(services.renew, "Renewed")
 
     @action(detail=True, methods=["post"])
     def toggle_addon(self, request, pk=None):
@@ -269,6 +311,24 @@ class PaymentViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.Retr
         )
 
 
+@api_view(["GET"])
+@authentication_classes([])
+@permission_classes([AllowAny])
+def public_plans(request):
+    """Prices for the public pricing page. Only plans the admin marked public."""
+    today = timezone.localdate()
+    plans = Plan.objects.filter(is_public=True, is_active=True, start_date__lte=today).filter(
+        Q(end_date__isnull=True) | Q(end_date__gte=today)
+    ).order_by("price")
+    return Response([
+        {
+            "id": p.pk, "name": p.name, "price": p.price, "billing_period": p.billing_period, "trial_days": p.trial_days,
+            "self_serve": p.min_quantity <= 1 and p.price > 0, "pausable": p.pausable, "min_quantity": p.min_quantity,
+        }
+        for p in plans
+    ])
+
+
 @api_view(["POST"])
 @permission_classes([IsTeam])
 def billing_run(request):
@@ -342,17 +402,29 @@ def report_summary(request):
     overdue = overdue_qs.aggregate(
         count=Count("id"), amount=Sum(ExpressionWrapper(F("total") - F("amount_paid"), output_field=money_field))
     )
-    mrr = Subscription.objects.filter(state=S.ACTIVE).aggregate(
-        value=Sum(
-            Case(
-                *[When(plan__billing_period=p, then=F("recurring_total") * Value(f)) for p, f in MONTHLY_FACTOR.items()],
-                output_field=money_field,
-            )
+    monthly_value = Sum(
+        Case(
+            *[When(plan__billing_period=p, then=F("recurring_total") * Value(f)) for p, f in MONTHLY_FACTOR.items()],
+            output_field=money_field,
         )
-    )["value"]
+    )
+    # Subscriptions still in a free trial pay nothing yet, so they are not recurring revenue.
+    paying = Subscription.objects.filter(state=S.ACTIVE).filter(Q(trial_ends__isnull=True) | Q(trial_ends__lte=today))
+    mrr = paying.aggregate(value=monthly_value)["value"]
+    customers = paying.order_by().values("customer").distinct().count()
+    by_plan = paying.order_by().values("plan__name").annotate(count=Count("id"), mrr=monthly_value).order_by("-mrr")[:8]
+    due = ExpressionWrapper(F("total") - F("amount_paid"), output_field=money_field)
+    aging = overdue_qs.aggregate(
+        d30=Sum(due, filter=Q(due_date__gte=today - timedelta(days=30))),
+        d60=Sum(due, filter=Q(due_date__lt=today - timedelta(days=30), due_date__gte=today - timedelta(days=60))),
+        d90=Sum(due, filter=Q(due_date__lt=today - timedelta(days=60), due_date__gte=today - timedelta(days=90))),
+        older=Sum(due, filter=Q(due_date__lt=today - timedelta(days=90))),
+    )
     window_start = start or today - timedelta(days=30)
     window_end = end or today
-    churned = Subscription.objects.filter(state=S.CLOSED, closed_at__range=(window_start, window_end)).count()
+    closed = Subscription.objects.filter(state=S.CLOSED, closed_at__range=(window_start, window_end))
+    churned = closed.count()
+    reasons = closed.order_by().values("close_reason").annotate(count=Count("id")).order_by("-count")
     by_state = dict(Subscription.objects.order_by().values_list("state").annotate(n=Count("id")))
     by_method = payments.order_by().values("method").annotate(amount=Sum("amount"), count=Count("id")).order_by("-amount")
     monthly = (
@@ -368,6 +440,20 @@ def report_summary(request):
         ).count(),
         "monthly_recurring_revenue": money(mrr or 0),
         "annual_recurring_revenue": money((mrr or 0) * 12),
+        "average_revenue_per_customer": money((mrr or 0) / max(customers, 1)),
+        "in_trial": Subscription.objects.filter(state=S.ACTIVE, trial_ends__gt=today).count(),
+        "mrr_by_plan": [{"plan": r["plan__name"], "count": r["count"], "mrr": money(r["mrr"] or 0)} for r in by_plan],
+        "overdue_aging": [
+            {"bucket": name, "amount": aging[key] or 0}
+            for name, key in [("1-30 days", "d30"), ("31-60 days", "d60"), ("61-90 days", "d90"), ("Over 90 days", "older")]
+        ],
+        "churn_reasons": [
+            {
+                "reason": Subscription.CloseReason(r["close_reason"]).label if r["close_reason"] else "Not given or ended on its own",
+                "count": r["count"],
+            }
+            for r in reasons
+        ],
         "churned_subscriptions": churned,
         "churn_rate": round(100 * churned / max(by_state.get(S.ACTIVE, 0) + churned, 1), 1),
         "invoiced": invoices.aggregate(v=Sum("total"))["v"] or 0,
@@ -391,3 +477,57 @@ def report_summary(request):
             for i in oldest
         ],
     })
+
+
+class _Echo:
+    def write(self, value):
+        return value
+
+
+def _csv_safe(value):
+    """A cell starting with one of these runs as a formula in a spreadsheet. Names come from customers."""
+    text = "" if value is None else str(value)
+    return f"'{text}" if text[:1] in ("=", "+", "-", "@", "\t", "\r") else text
+
+
+EXPORTS = {
+    "subscriptions": (
+        lambda: Subscription.objects.select_related("customer", "plan"), "start_date",
+        ["Number", "Customer", "Plan", "Stage", "Start", "Expiry", "Per period", "Close reason"],
+        lambda s: [s.number, s.customer.display_name, s.plan.name, s.get_state_display(), s.start_date, s.expiry_date, s.recurring_total, s.get_close_reason_display()],
+    ),
+    "invoices": (
+        lambda: Invoice.objects.all(), "invoice_date",
+        ["Number", "Customer", "Email", "Status", "Date", "Due", "Subtotal", "Discount", "Tax", "Credit", "Total", "Paid"],
+        lambda i: [i.number, i.customer_name, i.customer_email, i.get_state_display(), i.invoice_date, i.due_date, i.subtotal, i.discount_total, i.tax_total, i.credit_applied, i.total, i.amount_paid],
+    ),
+    "payments": (
+        lambda: Payment.objects.select_related("invoice"), "date",
+        ["Date", "Invoice", "Customer", "Method", "Amount", "Note"],
+        lambda p: [p.date, p.invoice.number, p.invoice.customer_name, p.get_method_display(), p.amount, p.note],
+    ),
+}
+
+
+@api_view(["GET"])
+@permission_classes([IsTeam])
+def report_export(request, kind):
+    if kind not in EXPORTS:
+        raise serializers.ValidationError({"kind": ["Choose subscriptions, invoices or payments."]})
+    queryset, date_field, header, row = EXPORTS[kind]
+    rows = queryset()
+    start, end = _date_param(request, "from"), _date_param(request, "to")
+    if start:
+        rows = rows.filter(**{f"{date_field}__gte": start})
+    if end:
+        rows = rows.filter(**{f"{date_field}__lte": end})
+    writer = csv.writer(_Echo())
+
+    def stream():
+        yield writer.writerow(header)
+        for item in rows.iterator(chunk_size=1000):
+            yield writer.writerow([_csv_safe(cell) for cell in row(item)])
+
+    response = StreamingHttpResponse(stream(), content_type="text/csv")
+    response["Content-Disposition"] = f'attachment; filename="brightloop-{kind}.csv"'
+    return response

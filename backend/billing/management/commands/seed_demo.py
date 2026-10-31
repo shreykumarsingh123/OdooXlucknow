@@ -59,17 +59,22 @@ class Command(BaseCommand):
         start = self.today - timedelta(days=400)
         self.monthly, _ = Plan.objects.get_or_create(
             name="Business Monthly",
-            defaults={"price": Decimal("999"), "billing_period": "monthly", "min_quantity": 1, "start_date": start, "pausable": True},
+            defaults={"price": Decimal("999"), "billing_period": "monthly", "min_quantity": 1, "start_date": start, "pausable": True, "is_public": True},
         )
         self.monthly.taxes.add(self.gst)
+        growth, _ = Plan.objects.get_or_create(
+            name="Growth Monthly",
+            defaults={"price": Decimal("2499"), "billing_period": "monthly", "min_quantity": 1, "start_date": start, "pausable": True, "trial_days": 14, "is_public": True},
+        )
+        growth.taxes.add(self.gst)
         self.yearly, _ = Plan.objects.get_or_create(
             name="Enterprise Yearly",
-            defaults={"price": Decimal("49999"), "billing_period": "yearly", "min_quantity": 10, "start_date": start, "closable": False},
+            defaults={"price": Decimal("49999"), "billing_period": "yearly", "min_quantity": 10, "start_date": start, "closable": False, "is_public": True},
         )
         self.yearly.taxes.add(self.gst)
         self.trial, _ = Plan.objects.get_or_create(
             name="Starter Weekly (ends on its own)",
-            defaults={"price": Decimal("199"), "billing_period": "weekly", "min_quantity": 1, "start_date": start, "auto_close": True, "renewable": False},
+            defaults={"price": Decimal("199"), "billing_period": "weekly", "min_quantity": 1, "start_date": start, "auto_close": True, "renewable": False, "is_public": True},
         )
         template, created = QuotationTemplate.objects.get_or_create(
             name="Enterprise 25 seats", defaults={"plan": self.yearly, "validity_days": 30}
@@ -82,6 +87,9 @@ class Command(BaseCommand):
         )
         if created:
             seats.products.add(self.erp)
+        Discount.objects.get_or_create(
+            name="Welcome offer", defaults={"kind": "percent", "value": Decimal("20"), "scope": "subscriptions", "start_date": start, "code": "WELCOME20"}
+        )
 
     def people(self):
         self.person("admin@brightloop.example", User.Role.ADMIN, first_name="Asha", last_name="Admin", is_staff=True, is_superuser=True)

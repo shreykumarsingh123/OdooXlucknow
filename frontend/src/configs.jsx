@@ -91,6 +91,8 @@ export const plans = {
     { key: 'price', label: 'Price', right: true, render: (r) => money(r.price) },
     { key: 'billing_period', label: 'Bills', render: (r) => label(r.billing_period) },
     { key: 'min_quantity', label: 'Min qty', right: true },
+    { key: 'trial_days', label: 'Trial', right: true, render: (r) => (r.trial_days ? `${r.trial_days} days` : '—') },
+    { key: 'is_public', label: 'Public', render: (r) => yesNo(r.is_public) },
     { key: 'dates', label: 'Available', render: (r) => `${r.start_date} to ${r.end_date || 'open'}` },
     { key: 'opts', label: 'Auto-close / Close / Pause / Renew', render: (r) => [r.auto_close, r.closable, r.pausable, r.renewable].map(yesNo).join(' / ') },
     active,
@@ -107,6 +109,8 @@ export const plans = {
     { name: 'closable', label: 'Can be closed early', type: 'checkbox', default: true },
     { name: 'pausable', label: 'Can be paused', type: 'checkbox' },
     { name: 'renewable', label: 'Can be renewed', type: 'checkbox', default: true },
+    { name: 'trial_days', label: 'Free trial (days)', type: 'number', default: 0, help: 'Days before the first invoice. Given once per customer per plan.' },
+    { name: 'is_public', label: 'Show on the pricing page and in the customer portal', type: 'checkbox' },
     activeField,
   ],
 }
@@ -135,6 +139,7 @@ export const discounts = {
   columns: [
     { key: 'name', label: 'Name' },
     { key: 'value', label: 'Value', right: true, render: (r) => (r.kind === 'percent' ? `${Number(r.value)}%` : money(r.value)) },
+    { key: 'code', label: 'Code', render: (r) => r.code || 'Automatic' },
     { key: 'scope', label: 'Applies to', render: (r) => (r.scope === 'products' ? 'Specific products' : 'Whole subscriptions') },
     { key: 'dates', label: 'Dates', render: (r) => `${r.start_date} to ${r.end_date || 'open'}` },
     { key: 'used', label: 'Used', right: true, render: (r) => `${r.times_used}${r.usage_limit ? ` of ${r.usage_limit}` : ''}` },
@@ -144,6 +149,7 @@ export const discounts = {
     { name: 'name', label: 'Name', required: true },
     { name: 'kind', label: 'Type', type: 'select', default: 'percent', required: true, options: [{ value: 'percent', label: 'Percentage' }, { value: 'fixed', label: 'Fixed amount' }] },
     { name: 'value', label: 'Value', type: 'number', required: true },
+    { name: 'code', label: 'Promo code', help: 'Optional. With a code, the discount applies only to subscriptions that redeem it.' },
     { name: 'scope', label: 'Applies to', type: 'select', default: 'products', required: true, options: [{ value: 'products', label: 'Specific products' }, { value: 'subscriptions', label: 'Whole subscriptions' }] },
     { name: 'products', label: 'Products', type: 'multi', source: '/products/', when: (v) => v.scope === 'products' },
     { name: 'subscriptions', label: 'Subscriptions', type: 'search-multi', path: '/subscriptions/', display: (s) => `${s.number} · ${s.customer_name}`, when: (v) => v.scope === 'subscriptions' },

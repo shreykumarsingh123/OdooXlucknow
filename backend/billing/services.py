@@ -1,6 +1,7 @@
 """Business rules for subscriptions, invoices and payments. Views stay thin and call these."""
 import calendar
 import logging
+import uuid
 from datetime import timedelta
 from decimal import Decimal
 
@@ -12,10 +13,10 @@ from django.db.models import F, Q
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
-from catalog.models import Discount, Plan, money
+from catalog.models import Discount, PaymentTerm, Plan, money
 from config.api import Conflict
 
-from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionLine
+from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionEvent, SubscriptionLine
 from .notify import send_sms
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,10 @@ def next_period_start(day, period, anchor=None):
 # ---------------------------------------------------------------- subscription building
 
 
+def log_event(subscription_id, message, actor=None):
+    SubscriptionEvent.objects.create(subscription_id=subscription_id, message=message[:255], actor=actor)
+
+
 def refresh_totals(subscription):
     total = sum((line.amount for line in subscription.lines.all() if line.is_enabled), ZERO)
     subscription.recurring_total = money(total)
@@ -71,15 +76,18 @@ def default_unit_price(product, variant):
     return product.sales_price + (variant.extra_price if variant else ZERO)
 
 
-def write_lines(subscription, rows):
-    """Replace all lines. The plan price is always added as its own line (assumption A-01)."""
-    subscription.lines.all().delete()
-    plan = subscription.plan
+def _add_plan_fee(subscription, plan):
     if plan.price > 0:
         fee = SubscriptionLine.objects.create(
             subscription=subscription, description=f"{plan.name} plan fee", quantity=1, unit_price=plan.price
         )
         fee.taxes.set(plan.taxes.all())
+
+
+def write_lines(subscription, rows):
+    """Replace all lines. The plan price is always added as its own line (assumption A-01)."""
+    subscription.lines.all().delete()
+    _add_plan_fee(subscription, subscription.plan)
     for row in rows:
         product, variant = row["product"], row.get("variant")
         label = f"{product.name} ({variant.value})" if variant else product.name
@@ -178,9 +186,39 @@ def confirm(subscription_id):
 def activate(subscription_id):
     sub = _locked(subscription_id)
     _require(sub, S.CONFIRMED)
+    _start_billing(sub)
+    return sub
+
+
+def _start_billing(sub):
+    """Go active. A plan's free trial delays the first invoice, once per customer per plan."""
+    used_before = Subscription.objects.filter(customer_id=sub.customer_id, plan_id=sub.plan_id, state__in=[S.ACTIVE, S.PAUSED, S.CLOSED]).exclude(pk=sub.pk).exists()
+    trial = 0 if used_before else sub.plan.trial_days
     sub.state = S.ACTIVE
-    sub.next_invoice_date = sub.start_date
-    sub.save(update_fields=["state", "next_invoice_date", "updated_at"])
+    sub.trial_ends = sub.start_date + timedelta(days=trial) if trial else None
+    sub.next_invoice_date = sub.trial_ends or sub.start_date
+    sub.save(update_fields=["state", "trial_ends", "next_invoice_date", "updated_at"])
+
+
+@transaction.atomic
+def start_plan(user, plan_id):
+    """A customer starts a public plan online. The team's quotation steps do not apply (assumption A-12)."""
+    today = timezone.localdate()
+    plan = Plan.objects.filter(pk=plan_id, is_public=True).first()
+    if plan is None or not plan.available_on(today) or plan.min_quantity > 1 or plan.price <= 0:
+        raise Conflict("This plan cannot be started online. Please contact Brightloop.")
+    type(user).objects.select_for_update().get(pk=user.pk)  # one at a time per customer, so a double click makes one
+    if Subscription.objects.filter(customer=user, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
+        raise Conflict("You already have this plan.")
+    term = PaymentTerm.objects.filter(is_active=True).first()
+    if term is None:
+        raise Conflict("This plan cannot be started online. Please contact Brightloop.")
+    sub = Subscription.objects.create(customer=user, plan=plan, payment_term=term, start_date=today, expiry_date=add_months(today, 12))
+    sub.number = f"SUB-{sub.pk:06d}"
+    sub.save(update_fields=["number"])
+    write_lines(sub, [])
+    _start_billing(sub)
+    log_event(sub.pk, "Started online" + (f", free trial until {sub.trial_ends}" if sub.trial_ends else ""), user)
     return sub
 
 
@@ -209,14 +247,18 @@ def resume(subscription_id):
 
 
 @transaction.atomic
-def close(subscription_id):
+def close(subscription_id, reason="", note=""):
     sub = _locked(subscription_id)
     _require(sub, S.ACTIVE, S.PAUSED)
     if not sub.plan.closable:
         raise Conflict("This plan cannot be closed early.")
+    if reason and reason not in Subscription.CloseReason.values:
+        raise ValidationError({"reason": ["Choose one of the listed reasons."]})
     sub.state = S.CLOSED
     sub.closed_at = timezone.localdate()
-    sub.save(update_fields=["state", "closed_at", "updated_at"])
+    sub.close_reason = reason
+    sub.close_note = str(note)[:255]
+    sub.save(update_fields=["state", "closed_at", "close_reason", "close_note", "updated_at"])
     return sub
 
 
@@ -249,13 +291,120 @@ def toggle_addon(subscription_id, line_id, enabled):
     return sub
 
 
+def _fee_gross(amount, taxes):
+    return amount + sum((tax.compute(amount, 1) for tax in taxes), ZERO)
+
+
+@transaction.atomic
+def change_plan(subscription_id, new_plan, actor=None, today=None):
+    """Swap the plan now. The unused part of the billed period is charged or credited (assumption A-13)."""
+    today = today or timezone.localdate()
+    sub = Subscription.objects.select_for_update().select_related("plan", "customer", "payment_term").get(pk=subscription_id)
+    _require(sub, S.ACTIVE)
+    old = sub.plan
+    if new_plan.pk == old.pk:
+        raise Conflict("This subscription is already on that plan.")
+    if new_plan.billing_period != old.billing_period:
+        raise Conflict("You can only change to a plan with the same billing period.")
+    if not new_plan.available_on(today):
+        raise Conflict("That plan is not available right now.")
+    quantity = sum(line.quantity for line in sub.lines.all() if not line.is_plan_fee)
+    if quantity < new_plan.min_quantity and new_plan.min_quantity > 1:
+        raise Conflict(f"That plan needs a minimum quantity of {new_plan.min_quantity}.")
+
+    fee = sub.lines.filter(product__isnull=True).prefetch_related("taxes").first()
+    billed = sub.invoices.exclude(state=I.CANCELLED).filter(
+        is_adjustment=False, period_end=sub.next_invoice_date - timedelta(days=1)
+    ).first()
+    difference, tax_part = ZERO, ZERO
+    if billed and billed.subtotal:
+        length = (billed.period_end - billed.period_start).days + 1
+        left = max(min((billed.period_end - today).days + 1, length), 0)
+        share = Decimal(left) / Decimal(length)
+        # What the old fee really cost after discounts, so a credit never exceeds what was charged.
+        paid_share = (billed.subtotal - billed.discount_total) / billed.subtotal
+        old_net = money((fee.unit_price if fee else ZERO) * share * paid_share)
+        new_net = money(new_plan.price * share)
+        old_gross = _fee_gross(old_net, fee.taxes.all()) if fee else ZERO
+        new_gross = _fee_gross(new_net, new_plan.taxes.all())
+        difference = new_gross - old_gross
+        tax_part = max((new_gross - new_net) - (old_gross - old_net), ZERO)
+
+    if fee:
+        fee.delete()
+    _add_plan_fee(sub, new_plan)
+    sub.plan = new_plan
+    sub.save(update_fields=["plan", "updated_at"])
+    refresh_totals(sub)
+
+    message = f"Plan changed from {old.name} to {new_plan.name}"
+    if difference > 0:
+        _adjustment_invoice(sub, f"{new_plan.name}: prorated change from {old.name}", difference - tax_part, tax_part, today)
+        message += f", {difference} charged for the rest of the period"
+    elif difference < 0:
+        sub.credit_balance += -difference
+        sub.save(update_fields=["credit_balance", "updated_at"])
+        message += f", {-difference} credited"
+    log_event(sub.pk, message, actor)
+    return sub
+
+
+def _adjustment_invoice(sub, description, subtotal, tax, today):
+    """A one-off invoice. It is ready to pay at once, and its unique key is outside the billing periods."""
+    last = sub.next_invoice_date - timedelta(days=1) if sub.next_invoice_date else today
+    customer = sub.customer
+    invoice = Invoice.objects.create(
+        subscription=sub, customer=customer, customer_name=customer.display_name, customer_email=customer.email,
+        customer_address=customer.address, state=I.CONFIRMED, invoice_date=today,
+        due_date=today + timedelta(days=sub.payment_term.due_days), period_start=today, period_end=max(last, today),
+        billing_key=f"adj:{uuid.uuid4().hex[:32]}", subtotal=subtotal, tax_total=tax, total=subtotal + tax, is_adjustment=True,
+    )
+    invoice.number = f"INV-{invoice.pk:06d}"
+    invoice.save(update_fields=["number"])
+    InvoiceLine.objects.create(
+        invoice=invoice, description=description[:255], quantity=1, unit_price=subtotal, tax_amount=tax, amount=subtotal
+    )
+    return invoice
+
+
+@transaction.atomic
+def adjust_balance(subscription_id, kind, amount, note, actor):
+    """An admin charges a one-off amount, or gives credit towards the next invoices."""
+    sub = Subscription.objects.select_for_update().select_related("customer", "payment_term").get(pk=subscription_id)
+    _require(sub, S.ACTIVE, S.PAUSED)
+    if kind == "credit":
+        sub.credit_balance += amount
+        sub.save(update_fields=["credit_balance", "updated_at"])
+        log_event(sub.pk, f"{amount} credit added: {note}", actor)
+        return None
+    invoice = _adjustment_invoice(sub, note, amount, ZERO, timezone.localdate())
+    log_event(sub.pk, f"{amount} charged on {invoice.number}: {note}", actor)
+    return invoice
+
+
+@transaction.atomic
+def redeem_code(subscription_id, code, actor=None):
+    sub = _locked(subscription_id)
+    _require(sub, S.ACTIVE, S.PAUSED)
+    discount = Discount.objects.select_for_update().filter(code__iexact=str(code).strip()).first() if str(code).strip() else None
+    if discount is None or not discount.is_live():
+        raise ValidationError({"code": ["This code is not valid, or has expired."]})
+    if discount.subscriptions.filter(pk=sub.pk).exists():
+        raise Conflict("This code is already on this subscription.")
+    discount.subscriptions.add(sub)
+    log_event(sub.pk, f"Code {discount.code} added: {discount.name}", actor)
+    return sub
+
+
 def close_ended(today=None):
     """Close subscriptions whose plan closes on its own, once they have ended."""
     today = today or timezone.localdate()
     ended = Subscription.objects.filter(state__in=[S.ACTIVE, S.PAUSED], plan__auto_close=True).filter(
         Q(expiry_date__lt=today) | Q(plan__end_date__lt=today)
     )
-    return ended.update(state=S.CLOSED, closed_at=today, updated_at=timezone.now())
+    ids = list(ended.values_list("pk", flat=True))
+    SubscriptionEvent.objects.bulk_create(SubscriptionEvent(subscription_id=pk, message="Closed on its own at the end of its term") for pk in ids)
+    return Subscription.objects.filter(pk__in=ids).update(state=S.CLOSED, closed_at=today, updated_at=timezone.now())
 
 
 # ---------------------------------------------------------------- invoicing
@@ -270,7 +419,9 @@ def _applicable_discounts(sub, day):
         Q(end_date__isnull=True) | Q(end_date__gte=day)
     ).filter(Q(usage_limit__isnull=True) | Q(times_used__lt=F("usage_limit")))
     product_ids = [line.product_id for line in sub.lines.all() if line.product_id]
-    by_product = live.filter(scope=Discount.Scope.PRODUCTS, products__in=product_ids).distinct().prefetch_related("products")
+    by_product = live.filter(scope=Discount.Scope.PRODUCTS, products__in=product_ids).filter(
+        Q(code__isnull=True) | Q(subscriptions=sub)
+    ).distinct().prefetch_related("products")
     whole = live.filter(scope=Discount.Scope.SUBSCRIPTIONS, subscriptions=sub)
     return list(by_product), list(whole)
 
@@ -326,7 +477,7 @@ def _spread(discount, targets):
 
 
 def _create_invoice(sub, period_start, day):
-    period_end = next_period_start(period_start, sub.plan.billing_period, sub.start_date) - timedelta(days=1)
+    period_end = next_period_start(period_start, sub.plan.billing_period, sub.billing_anchor) - timedelta(days=1)
     rows, applied = _price_lines(sub, day)
     if not rows:
         return None
@@ -334,6 +485,10 @@ def _create_invoice(sub, period_start, day):
     subtotal = sum((r["base"] for r in rows), ZERO)
     discount_total = sum((r["discount"] for r in rows), ZERO)
     tax_total = sum((r["tax"] for r in rows), ZERO)
+    credit = min(sub.credit_balance, subtotal - discount_total + tax_total)
+    if credit:
+        sub.credit_balance -= credit
+        sub.save(update_fields=["credit_balance"])
     invoice = Invoice.objects.create(
         subscription=sub,
         customer=customer,
@@ -348,7 +503,8 @@ def _create_invoice(sub, period_start, day):
         subtotal=subtotal,
         discount_total=discount_total,
         tax_total=tax_total,
-        total=subtotal - discount_total + tax_total,
+        credit_applied=credit,
+        total=subtotal - discount_total + tax_total - credit,
     )
     invoice.number = f"INV-{invoice.pk:06d}"
     invoice.save(update_fields=["number"])
@@ -388,7 +544,8 @@ def bill_subscription(subscription_id, today=None):
                 invoice = _create_invoice(sub, period, today)
                 if invoice:
                     created.append(invoice)
-            period = next_period_start(period, sub.plan.billing_period, sub.start_date)
+                    log_event(sub.pk, f"Invoice {invoice.number} created for {invoice.period_start} to {invoice.period_end}")
+            period = next_period_start(period, sub.plan.billing_period, sub.billing_anchor)
         sub.next_invoice_date = period
         sub.save(update_fields=["next_invoice_date", "updated_at"])
     return created
@@ -434,7 +591,9 @@ def cancel_invoice(invoice_id, rebill=False):
         raise Conflict("This invoice has payments recorded, so it cannot be cancelled.")
     invoice.state = I.CANCELLED
     fields = ["state"]
-    if rebill:
+    if invoice.credit_applied:
+        Subscription.objects.filter(pk=invoice.subscription_id).update(credit_balance=F("credit_balance") + invoice.credit_applied)
+    if rebill and not invoice.is_adjustment:
         invoice.billing_key = None
         fields.append("billing_key")
         sub = Subscription.objects.select_for_update().get(pk=invoice.subscription_id)

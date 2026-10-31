@@ -1,5 +1,6 @@
 from django.db import transaction
 from rest_framework import serializers
+from rest_framework.validators import UniqueValidator
 
 from .models import Discount, PaymentTerm, Plan, Product, ProductVariant, QuotationTemplate, QuotationTemplateLine, Tax
 
@@ -68,7 +69,7 @@ class PlanSerializer(serializers.ModelSerializer):
         model = Plan
         fields = [
             "id", "name", "price", "billing_period", "min_quantity", "start_date", "end_date", "taxes",
-            "auto_close", "closable", "pausable", "renewable", "is_active",
+            "auto_close", "closable", "pausable", "renewable", "trial_days", "is_public", "is_active",
         ]
 
     def validate(self, attrs):
@@ -80,13 +81,21 @@ class PlanSerializer(serializers.ModelSerializer):
 
 
 class DiscountSerializer(serializers.ModelSerializer):
+    code = serializers.CharField(
+        max_length=40, required=False, allow_blank=True, allow_null=True,
+        validators=[UniqueValidator(queryset=Discount.objects.all(), lookup="iexact", message="This code is already in use.")],
+    )
+
     class Meta:
         model = Discount
         fields = [
             "id", "name", "kind", "value", "scope", "min_purchase", "min_quantity", "start_date", "end_date",
-            "usage_limit", "times_used", "products", "subscriptions", "is_active",
+            "usage_limit", "times_used", "code", "products", "subscriptions", "is_active",
         ]
         read_only_fields = ["times_used"]
+
+    def validate_code(self, value):
+        return (value or "").strip().upper() or None
 
     def validate(self, attrs):
         def get(key):
@@ -100,7 +109,7 @@ class DiscountSerializer(serializers.ModelSerializer):
         subscriptions = attrs.get("subscriptions", self.instance.subscriptions.all() if self.instance else [])
         if get("scope") == Discount.Scope.PRODUCTS and not len(products):
             raise serializers.ValidationError({"products": ["Choose at least one product."]})
-        if get("scope") == Discount.Scope.SUBSCRIPTIONS and not len(subscriptions):
+        if get("scope") == Discount.Scope.SUBSCRIPTIONS and not len(subscriptions) and not get("code"):
             raise serializers.ValidationError({"subscriptions": ["Choose at least one subscription."]})
         return attrs
 

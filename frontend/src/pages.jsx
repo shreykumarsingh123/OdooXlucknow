@@ -7,6 +7,7 @@ import {
 } from './ui'
 
 const isoToday = () => new Date().toISOString().slice(0, 10)
+const inTrial = (sub) => sub.state === 'active' && sub.trial_ends && sub.trial_ends > isoToday()
 const customerName = (c) => `${c.name}${c.company && c.company !== c.name ? ` · ${c.company}` : ''}`
 
 /* ------------------------------------------------------------ dashboard */
@@ -47,6 +48,27 @@ function RevenueChart({ rows }) {
   )
 }
 
+function BarList({ title, rows, name, value, format, empty, note }) {
+  const peak = Math.max(...rows.map((r) => Number(r[value])), 1)
+  const live = rows.filter((r) => Number(r[value]) > 0)
+  return (
+    <div className="card">
+      <h2>{title}</h2>
+      {note && <p className="muted small-note">{note}</p>}
+      {!live.length ? <p className="muted">{empty}</p> : (
+        <ul className="barlist">
+          {live.map((r) => (
+            <li key={r[name]}>
+              <span>{r[name]}</span><b>{format(r[value])}</b>
+              <i aria-hidden="true"><u style={{ width: `${(Number(r[value]) / peak) * 100}%` }} /></i>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export function Dashboard() {
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
@@ -75,6 +97,14 @@ export function Dashboard() {
     }
   }
 
+  const exportCsv = async (kind) => {
+    try {
+      await api.download(`/reports/export/${kind}/${query({ from, to })}`, `brightloop-${kind}.csv`)
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+
   return (
     <section>
       <header className="page-head">
@@ -84,6 +114,10 @@ export function Dashboard() {
           <Field label="To"><input type="date" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
         </div>
       </header>
+      <div className="row export-row">
+        <span className="muted">Export CSV:</span>
+        {['subscriptions', 'invoices', 'payments'].map((kind) => <button key={kind} onClick={() => exportCsv(kind)}>{label(kind)}</button>)}
+      </div>
       <ErrorBox error={error} onRetry={reload} />
       {loading && !data && <p className="muted">Loading…</p>}
       {data && (
@@ -106,9 +140,16 @@ export function Dashboard() {
             <Tile title="Invoiced" value={money(data.invoiced)} note="Confirmed and paid invoices" />
             <Tile title="Annual recurring revenue" value={money(data.annual_recurring_revenue)} note="Monthly recurring revenue × 12" />
             <Tile title="Churn" value={`${data.churn_rate}%`} note={`${data.churned_subscriptions} closed ${from || to ? 'in these dates' : 'in the last 30 days'}`} />
+            <Tile title="Revenue per customer" value={money(data.average_revenue_per_customer)} note="Monthly, across paying customers" />
+            <Tile title="In free trial" value={data.in_trial.toLocaleString('en-IN')} note="Not yet counted as recurring revenue" />
           </div>
           <RevenueChart rows={data.revenue_by_month} />
           {data.overdue_count > 0 && <div className="row"><button onClick={chase}>Send overdue reminders</button></div>}
+          <div className="grid-3">
+            <BarList title="Recurring revenue by plan" note="Monthly value, largest first" rows={data.mrr_by_plan} name="plan" value="mrr" format={money} empty="No paying subscriptions yet." />
+            <BarList title="Overdue by age" note="Amount still owed, by days past due" rows={data.overdue_aging} name="bucket" value="amount" format={money} empty="Nothing overdue." />
+            <BarList title="Why customers left" note={from || to ? 'In these dates' : 'In the last 30 days'} rows={data.churn_reasons} name="reason" value="count" format={(v) => v.toLocaleString('en-IN')} empty="No cancellations in this period." />
+          </div>
           <div className="grid-2">
             <div className="card flush">
               <h2>Oldest overdue invoices</h2>
@@ -178,12 +219,13 @@ export function Subscriptions() {
     { key: 'start_date', label: 'Start' },
     { key: 'expiry_date', label: 'Expiry' },
     { key: 'recurring_total', label: 'Per period', right: true, render: (r) => money(r.recurring_total) },
-    { key: 'state', label: 'Stage', render: (r) => <Badge value={r.state} /> },
+    { key: 'state', label: 'Stage', render: (r) => <><Badge value={r.state} />{inTrial(r) && <small className="trial-tag">Trial</small>}</> },
   ]
   return (
     <section>
       <header className="page-head">
         <div><h1>{team ? 'Subscriptions' : 'My subscriptions'}</h1></div>
+        {!team && <Link className="button primary" to="/browse-plans">Browse plans</Link>}
         {team && (
           <div className="row">
             <button onClick={() => setPicking(true)}>From template</button>
@@ -324,7 +366,197 @@ function SubscriptionEditor({ record }) {
 
 const STAGES = ['draft', 'quotation', 'confirmed', 'active', 'closed']
 const SUB_ACTIONS = {
-  quote: 'Send quotation', confirm: 'Confirm', activate: 'Activate', pause: 'Pause', resume: 'Resume', renew: 'Renew', close: 'Close',
+  quote: 'Send quotation', confirm: 'Confirm', activate: 'Activate', pause: 'Pause', resume: 'Resume', renew: 'Renew',
+}
+const CLOSE_REASONS = [['too_expensive', 'Too expensive'], ['missing_features', 'Missing features'], ['not_using', 'Not using it enough'], ['switched', 'Switched to another product'], ['other', 'Something else']]
+
+function ActionModal({ title, submitText, danger, onClose, onSubmit, children, extra }) {
+  const [error, setError] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const submit = async (event) => {
+    event.preventDefault()
+    setBusy(true)
+    setError(null)
+    try {
+      await onSubmit()
+    } catch (err) {
+      setError(err)
+      setBusy(false)
+    }
+  }
+  return (
+    <Modal title={title} onClose={onClose}>
+      <form className="form" onSubmit={submit}>
+        <ErrorBox error={error} />
+        {typeof children === 'function' ? children(error) : children}
+        <footer><button type="button" onClick={onClose}>Keep as it is</button>{extra}<button className={danger ? 'danger' : 'primary'} disabled={busy}>{submitText}</button></footer>
+      </form>
+    </Modal>
+  )
+}
+
+function CloseModal({ sub, canPause, onClose, send }) {
+  const [reason, setReason] = useState('')
+  const [note, setNote] = useState('')
+  return (
+    <ActionModal
+      title={`Close ${sub.number}?`} submitText="Close subscription" danger onClose={onClose}
+      onSubmit={() => send('close', { reason, note }, 'Subscription closed.')}
+      extra={canPause && <button type="button" className="primary" onClick={() => send('pause', {}, 'Subscription paused. Resume it any time.')}>Pause instead</button>}
+    >
+      <p>Billing stops, and this cannot be undone.{canPause && ' You can pause instead. You are not billed while paused, and you can resume at any time.'}</p>
+      <Field label="Why are you leaving?">
+        <select value={reason} onChange={(e) => setReason(e.target.value)}>
+          <option value="">Prefer not to say</option>
+          {CLOSE_REASONS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+        </select>
+      </Field>
+      <Field label="Anything else?"><input maxLength="255" value={note} onChange={(e) => setNote(e.target.value)} /></Field>
+    </ActionModal>
+  )
+}
+
+function ChangePlanModal({ sub, team, onClose, send }) {
+  const { data } = useLoad(team ? '/plans/?page_size=100' : '/public/plans/')
+  const all = data?.results || data || []
+  const options = all.filter((p) => p.billing_period === sub.billing_period && p.id !== sub.plan && p.is_active !== false)
+  const [plan, setPlan] = useState('')
+  const chosen = options.find((p) => p.id === Number(plan))
+  return (
+    <ActionModal title="Change plan" submitText="Change plan" onClose={onClose} onSubmit={() => send('change_plan', { plan: Number(plan) }, 'Plan changed.')}>
+      {(error) => (
+        <>
+          <p className="muted">You are on {sub.plan_name}. The change applies now. A higher price is charged for the days left in this period, and a lower price leaves a credit for your next invoices.</p>
+          <Field label={`New ${sub.billing_period} plan`} error={error?.fields?.plan} help={chosen ? `${money(chosen.price)} ${chosen.billing_period}, before tax` : null}>
+            <select required value={plan} onChange={(e) => setPlan(e.target.value)}>
+              <option value="">{data && !options.length ? 'No other plans available' : 'Choose'}</option>
+              {options.map((p) => <option key={p.id} value={p.id}>{p.name}, {money(p.price)}</option>)}
+            </select>
+          </Field>
+        </>
+      )}
+    </ActionModal>
+  )
+}
+
+function RedeemModal({ onClose, send }) {
+  const [code, setCode] = useState('')
+  return (
+    <ActionModal title="Add a promo code" submitText="Apply code" onClose={onClose} onSubmit={() => send('redeem', { code }, 'Code added. It applies from your next invoice.')}>
+      {(error) => <Field label="Promo code" error={error?.fields?.code}><input required autoComplete="off" value={code} onChange={(e) => setCode(e.target.value.toUpperCase())} /></Field>}
+    </ActionModal>
+  )
+}
+
+function AdjustModal({ onClose, send }) {
+  const [form, setForm] = useState({ kind: 'credit', amount: '', note: '' })
+  const set = (patch) => setForm((f) => ({ ...f, ...patch }))
+  return (
+    <ActionModal title="Charge or credit" submitText="Save" onClose={onClose} onSubmit={() => send('adjust', form, form.kind === 'credit' ? 'Credit added.' : 'Charge invoiced.')}>
+      {(error) => (
+        <>
+          <Field label="Type" error={error?.fields?.kind}>
+            <select value={form.kind} onChange={(e) => set({ kind: e.target.value })}>
+              <option value="credit">Credit: taken off the next invoices</option>
+              <option value="charge">One-off charge: invoiced now</option>
+            </select>
+          </Field>
+          <Field label="Amount" error={error?.fields?.amount}><input type="number" min="0.01" step="0.01" required value={form.amount} onChange={(e) => set({ amount: e.target.value })} /></Field>
+          <Field label="Reason" error={error?.fields?.note} help="The customer can see this."><input required maxLength="200" value={form.note} onChange={(e) => set({ note: e.target.value })} /></Field>
+        </>
+      )}
+    </ActionModal>
+  )
+}
+
+function Timeline({ events }) {
+  return (
+    <div className="card">
+      <h2>Activity</h2>
+      {!events.length ? <p className="muted">Nothing recorded yet.</p> : (
+        <ol className="timeline">
+          {events.map((e) => (
+            <li key={e.id}><b>{e.message}</b><small>{e.actor_name}, {new Date(e.created_at).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' })}</small></li>
+          ))}
+        </ol>
+      )}
+    </div>
+  )
+}
+
+export function BrowsePlans() {
+  const navigate = useNavigate()
+  const { data, error, reload } = useLoad('/public/plans/')
+  const [problem, setProblem] = useState(null)
+  const [busy, setBusy] = useState(null)
+  const start = async (plan) => {
+    setBusy(plan.id)
+    setProblem(null)
+    try {
+      navigate(`/subscriptions/${(await api.post('/subscriptions/start/', { plan: plan.id })).id}`)
+    } catch (err) {
+      setProblem(err)
+      setBusy(null)
+    }
+  }
+  return (
+    <section>
+      <header className="page-head"><div><h1>Browse plans</h1><p className="muted">Start a plan yourself. Prices are before tax.</p></div></header>
+      <ErrorBox error={error || problem} onRetry={error ? reload : undefined} />
+      {!data && !error && <p className="muted">Loading…</p>}
+      {data && !data.length && <p className="muted">No plans are open right now.</p>}
+      <div className="tiles plan-tiles">
+        {data?.map((plan) => (
+          <div className="tile" key={plan.id}>
+            <span>{label(plan.billing_period)}</span>
+            <h2>{plan.name}</h2>
+            <strong>{money(plan.price)}</strong>
+            <small>{plan.trial_days ? `${plan.trial_days} days free, for first-time customers on this plan` : 'Billed from today'}</small>
+            {plan.self_serve
+              ? <button className="primary" disabled={busy !== null} onClick={() => start(plan)}>{busy === plan.id ? 'Starting…' : plan.trial_days ? 'Start free trial' : 'Start plan'}</button>
+              : <small>From {plan.min_quantity} seats. Our team sets this one up with you.</small>}
+          </div>
+        ))}
+      </div>
+    </section>
+  )
+}
+
+export function Profile() {
+  const toast = useToast()
+  const { data, error, reload } = useLoad('/auth/me/')
+  const [form, setForm] = useState(null)
+  const [problem, setProblem] = useState(null)
+  useEffect(() => { if (data) setForm(data) }, [data])
+  const set = (name) => (e) => setForm((f) => ({ ...f, [name]: e.target.value }))
+  const submit = async (event) => {
+    event.preventDefault()
+    setProblem(null)
+    try {
+      const { first_name, last_name, company, phone, address } = form
+      await api.patch('/auth/me/', { first_name, last_name, company, phone, address })
+      toast('Profile saved.')
+    } catch (err) {
+      setProblem(err)
+    }
+  }
+  if (error) return <ErrorBox error={error} onRetry={reload} />
+  if (!form) return <p className="muted">Loading…</p>
+  const field = (name, text, help) => <Field label={text} help={help} error={problem?.fields?.[name]}><input value={form[name] || ''} onChange={set(name)} /></Field>
+  return (
+    <section>
+      <header className="page-head"><div><h1>Profile</h1><p className="muted">{form.email}</p></div></header>
+      <form className="card form narrow" onSubmit={submit}>
+        <ErrorBox error={problem} />
+        {field('first_name', 'First name')}
+        {field('last_name', 'Last name')}
+        {field('company', 'Company')}
+        {field('phone', 'Phone', 'With country code, for payment reminders by SMS.')}
+        <Field label="Billing address" error={problem?.fields?.address}><textarea rows="3" value={form.address || ''} onChange={set('address')} /></Field>
+        <footer><button className="primary">Save</button></footer>
+      </form>
+    </section>
+  )
 }
 
 function Stepper({ state, stages = STAGES }) {
@@ -348,6 +580,15 @@ export function SubscriptionDetail() {
   const toast = useToast()
   const { data: sub, error, reload } = useLoad(`/subscriptions/${id}/`)
   const invoices = useLoad(`/invoices/${query({ subscription: id, page_size: 50 })}`)
+  const [modal, setModal] = useState(null)
+  // Used by the dialogs, which show the error themselves.
+  const send = async (path, body, message) => {
+    await api.post(`/subscriptions/${id}/${path}/`, body)
+    toast(message)
+    setModal(null)
+    reload()
+    invoices.reload()
+  }
 
   const act = async (path, body, message) => {
     try {
@@ -381,7 +622,7 @@ export function SubscriptionDetail() {
   if (error) return <ErrorBox error={error} onRetry={reload} />
   if (!sub) return <p className="muted">Loading…</p>
   const can = (name) => sub.allowed_actions.includes(name)
-  const confirmFirst = { close: 'Close this subscription? Billing will stop.', pause: 'Pause this subscription? It will not be billed while paused.' }
+  const confirmFirst = { pause: 'Pause this subscription? It will not be billed while paused.' }
   return (
     <section>
       <header className="page-head">
@@ -393,6 +634,10 @@ export function SubscriptionDetail() {
           {Object.entries(SUB_ACTIONS).filter(([name]) => can(name)).map(([name, text]) => (
             <button key={name} className={['quote', 'confirm', 'activate'].includes(name) ? 'primary' : ''} onClick={() => (!confirmFirst[name] || window.confirm(confirmFirst[name])) && act(name, {}, `${text}: done.`)}>{text}</button>
           ))}
+          {can('change_plan') && <button onClick={() => setModal('plan')}>Change plan</button>}
+          {can('redeem') && <button onClick={() => setModal('code')}>Promo code</button>}
+          {can('adjust') && <button onClick={() => setModal('adjust')}>Charge or credit</button>}
+          {can('close') && <button className="danger" onClick={() => setModal('close')}>Close</button>}
         </div>
       </header>
       <Stepper state={sub.state} />
@@ -402,7 +647,10 @@ export function SubscriptionDetail() {
           <div><dt>Start date</dt><dd>{sub.start_date}</dd></div>
           <div><dt>Expiry date</dt><dd>{sub.expiry_date}</dd></div>
           <div><dt>Payment terms</dt><dd>{sub.payment_term_name}</dd></div>
+          {inTrial(sub) && <div><dt>Free trial until</dt><dd>{sub.trial_ends}</dd></div>}
           {sub.next_invoice_date && sub.state === 'active' && <div><dt>Next invoice</dt><dd>{sub.next_invoice_date}</dd></div>}
+          {Number(sub.credit_balance) > 0 && <div><dt>Credit for next invoices</dt><dd>{money(sub.credit_balance)}</dd></div>}
+          {sub.promotions.length > 0 && <div><dt>Offers</dt><dd>{sub.promotions.join(', ')}</dd></div>}
           {sub.quotation_valid_until && sub.state === 'quotation' && <div><dt>Quotation valid until</dt><dd>{sub.quotation_valid_until}</dd></div>}
           <div><dt>Per billing period</dt><dd>{money(sub.recurring_total)} + tax</dd></div>
         </dl>
@@ -428,6 +676,11 @@ export function SubscriptionDetail() {
         <h2>Invoices</h2>
         <InvoiceTable rows={invoices.data?.results} loading={invoices.loading} />
       </div>
+      <Timeline events={sub.events} />
+      {modal === 'close' && <CloseModal sub={sub} canPause={can('pause')} onClose={() => setModal(null)} send={send} />}
+      {modal === 'plan' && <ChangePlanModal sub={sub} team={team} onClose={() => setModal(null)} send={send} />}
+      {modal === 'code' && <RedeemModal onClose={() => setModal(null)} send={send} />}
+      {modal === 'adjust' && <AdjustModal onClose={() => setModal(null)} send={send} />}
     </section>
   )
 }
@@ -659,6 +912,7 @@ export function InvoiceDetail() {
           <div><dt>Subtotal</dt><dd>{money(inv.subtotal)}</dd></div>
           {inv.discounts.map((d) => <div key={d.name}><dt>Discount: {d.name}</dt><dd>−{money(d.amount)}</dd></div>)}
           <div><dt>Tax</dt><dd>{money(inv.tax_total)}</dd></div>
+          {Number(inv.credit_applied) > 0 && <div><dt>Credit used</dt><dd>−{money(inv.credit_applied)}</dd></div>}
           <div className="grand"><dt>Total</dt><dd>{money(inv.total)}</dd></div>
           <div><dt>Paid</dt><dd>{money(inv.amount_paid)}</dd></div>
           <div className="grand"><dt>Amount due</dt><dd>{money(inv.amount_due)}</dd></div>

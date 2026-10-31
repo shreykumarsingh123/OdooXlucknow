@@ -82,3 +82,16 @@ All are set in `.env`, and stay hidden or inactive until configured. See `.env.e
 - Set `DEBUG=false`, a random `SECRET_KEY` of 50 or more characters, `ALLOWED_HOSTS`, `CORS_ALLOWED_ORIGINS`, `FRONTEND_URL`, `CSRF_TRUSTED_ORIGINS` and SMTP values.
 - Serve Django with `gunicorn config.wsgi` behind HTTPS, run `migrate` and `collectstatic`, and host `frontend/dist` as a static site with `/api` proxied to Django.
 - Create the first admin with `manage.py createsuperuser`.
+
+## Landing page and growth features
+
+Logged-out visitors at `/` see the landing page, with prices from `GET /api/public/plans/`. Logged-in users can see it at `/welcome`.
+
+| Feature | Where |
+|---------|-------|
+| Free trial, public listing | Plan form: `trial_days`, `is_public` |
+| Promo code | Discount form: `code`. The demo seed adds `WELCOME20` |
+| Start a plan | Customer portal: Browse plans |
+| Change plan, promo code, pause before closing | Subscription page |
+| One-off charge or credit | Subscription page, admin only |
+| CSV exports, recurring revenue by plan, overdue aging, churn reasons | Dashboard |

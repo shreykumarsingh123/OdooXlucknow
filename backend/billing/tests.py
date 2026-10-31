@@ -585,3 +585,184 @@ class GoogleLoginTests(Base):
     def test_not_configured(self):
         self.assertEqual(self.login({"email": "z@x.example", "email_verified": True}).status_code, 400)
         self.assertEqual(self.api().get("/api/auth/config/").data["google_client_id"], "")
+
+
+class GrowthFeatureTests(Base):
+    def setUp(self):
+        super().setUp()
+        start = self.today - timedelta(days=800)
+        self.small = Plan.objects.create(name="Small", price=Decimal("300"), billing_period="monthly", start_date=start, is_public=True)
+        self.big = Plan.objects.create(name="Big", price=Decimal("900"), billing_period="monthly", start_date=start, is_public=True)
+        self.free = Plan.objects.create(name="Free try", price=Decimal("500"), billing_period="monthly", start_date=start, is_public=True, trial_days=14)
+        self.hidden = Plan.objects.create(name="Hidden", price=Decimal("500"), billing_period="monthly", start_date=start)
+        self.yearly = Plan.objects.create(name="Year", price=Decimal("500"), billing_period="yearly", start_date=start, is_public=True)
+
+    def start(self, plan, user=None):
+        return self.api(user or self.cust).post("/api/subscriptions/start/", {"plan": plan.pk}, format="json")
+
+    def billed(self, plan=None):
+        """Billed today for a month that runs from today, so the whole period is still unused."""
+        sub = self.sub(quantity=1, plan=plan or self.small, rows=[{"product": self.addon, "quantity": 1}])
+        services.bill_subscription(sub.pk)
+        return Subscription.objects.get(pk=sub.pk)
+
+    def test_public_plans_need_no_login_and_hide_private_ones(self):
+        response = self.api().get("/api/public/plans/")
+        self.assertEqual(response.status_code, 200)
+        names = [row["name"] for row in response.data]
+        self.assertIn("Small", names)
+        self.assertNotIn("Hidden", names)
+        self.assertNotIn("cost_price", response.data[0])
+
+    def test_customer_starts_public_plan_once(self):
+        response = self.start(self.small)
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data["state"], "active")
+        self.assertEqual(Decimal(response.data["recurring_total"]), Decimal("300"))
+        self.assertEqual(self.start(self.small).status_code, 409)
+
+    def test_private_plan_and_team_cannot_start_online(self):
+        self.assertEqual(self.start(self.hidden).status_code, 409)
+        self.assertEqual(self.start(self.small, self.staff).status_code, 403)
+
+    def test_trial_delays_first_invoice_and_keeps_full_periods(self):
+        sub = Subscription.objects.get(pk=self.start(self.free).data["id"])
+        trial_end = self.today + timedelta(days=14)
+        self.assertEqual(sub.next_invoice_date, trial_end)
+        self.assertEqual(services.bill_subscription(sub.pk), [])
+        invoice = services.bill_subscription(sub.pk, trial_end)[0]
+        self.assertEqual(invoice.period_start, trial_end)
+        self.assertEqual(invoice.period_end, services.next_period_start(trial_end, "monthly", trial_end) - timedelta(days=1))
+
+    def test_trial_is_not_given_twice(self):
+        first = self.start(self.free).data["id"]
+        services.close(first)
+        self.assertIsNone(Subscription.objects.get(pk=self.start(self.free).data["id"]).trial_ends)
+
+    def test_trial_is_not_counted_in_mrr(self):
+        self.start(self.free)
+        data = self.api(self.admin).get("/api/reports/summary/").data
+        self.assertEqual(data["monthly_recurring_revenue"], Decimal("0.00"))
+        self.assertEqual(data["in_trial"], 1)
+
+    def test_upgrade_charges_unused_difference_once(self):
+        sub = self.billed()
+        response = self.api(self.cust).post(f"/api/subscriptions/{sub.pk}/change_plan/", {"plan": self.big.pk}, format="json")
+        self.assertEqual(response.status_code, 200)
+        extra = Invoice.objects.get(subscription=sub, is_adjustment=True)
+        self.assertEqual(extra.total, Decimal("600.00"))
+        self.assertEqual(extra.state, "confirmed")
+        sub.refresh_from_db()
+        self.assertEqual(sub.plan, self.big)
+        self.assertEqual(sub.recurring_total, Decimal("950.00"))
+
+    def test_downgrade_gives_credit_used_on_next_invoice(self):
+        sub = self.billed(self.big)
+        services.change_plan(sub.pk, self.small)
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("600.00"))
+        self.assertFalse(Invoice.objects.filter(subscription=sub, is_adjustment=True).exists())
+        following = services.bill_subscription(sub.pk, sub.next_invoice_date)[0]
+        self.assertEqual(following.credit_applied, Decimal("350.00"))
+        self.assertEqual(following.total, Decimal("0.00"))
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("250.00"))
+
+    def test_cancelling_invoice_returns_credit(self):
+        sub = self.billed(self.big)
+        services.change_plan(sub.pk, self.small)
+        following = services.bill_subscription(sub.pk, Subscription.objects.get(pk=sub.pk).next_invoice_date)[0]
+        services.cancel_invoice(following.pk)
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("600.00"))
+
+    def test_cancelled_adjustment_cannot_rewind_billing(self):
+        sub = self.billed()
+        services.change_plan(sub.pk, self.big)
+        before = Subscription.objects.get(pk=sub.pk).next_invoice_date
+        services.cancel_invoice(Invoice.objects.get(subscription=sub, is_adjustment=True).pk, rebill=True)
+        self.assertEqual(Subscription.objects.get(pk=sub.pk).next_invoice_date, before)
+
+    def test_plan_change_rules(self):
+        sub = self.billed()
+        client = self.api(self.cust)
+        url = f"/api/subscriptions/{sub.pk}/change_plan/"
+        self.assertEqual(client.post(url, {"plan": self.yearly.pk}, format="json").status_code, 409)
+        self.assertEqual(client.post(url, {"plan": self.hidden.pk}, format="json").status_code, 400)
+        self.assertEqual(client.post(url, {"plan": "x"}, format="json").status_code, 400)
+        self.assertEqual(self.api(self.other).post(url, {"plan": self.big.pk}, format="json").status_code, 404)
+
+    def make_code(self, **extra):
+        return Discount.objects.create(name="Promo", kind="percent", value=Decimal("50"), scope="subscriptions", start_date=self.today, code="SAVE50", **extra)
+
+    def test_code_applies_only_after_redeeming(self):
+        self.make_code()
+        plain = self.sub(quantity=2)
+        redeemed = self.sub(quantity=2, customer=self.other)
+        response = self.api(self.other).post(f"/api/subscriptions/{redeemed.pk}/redeem/", {"code": "save50"}, format="json")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(services.bill_subscription(plain.pk)[0].discount_total, Decimal("0.00"))
+        self.assertEqual(services.bill_subscription(redeemed.pk)[0].discount_total, Decimal("100.00"))
+
+    def test_bad_expired_or_repeated_code_refused(self):
+        sub = self.sub(quantity=2)
+        client = self.api(self.cust)
+        url = f"/api/subscriptions/{sub.pk}/redeem/"
+        self.assertEqual(client.post(url, {"code": "NOPE"}, format="json").status_code, 400)
+        code = self.make_code()
+        self.assertEqual(client.post(url, {"code": "SAVE50"}, format="json").status_code, 200)
+        self.assertEqual(client.post(url, {"code": "SAVE50"}, format="json").status_code, 409)
+        code.end_date = self.today - timedelta(days=1)
+        code.start_date = self.today - timedelta(days=2)
+        code.save()
+        other = self.sub(quantity=2)
+        self.assertEqual(client.post(f"/api/subscriptions/{other.pk}/redeem/", {"code": "SAVE50"}, format="json").status_code, 400)
+
+    def test_adjustment_is_admin_only(self):
+        sub = self.sub(quantity=2)
+        url = f"/api/subscriptions/{sub.pk}/adjust/"
+        body = {"kind": "credit", "amount": "75", "note": "Goodwill"}
+        self.assertEqual(self.api(self.staff).post(url, body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.cust).post(url, body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.admin).post(url, body, format="json").status_code, 200)
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("75.00"))
+        self.assertEqual(self.api(self.admin).post(url, {"kind": "charge", "amount": "40", "note": "Setup"}, format="json").status_code, 200)
+        self.assertEqual(Invoice.objects.get(subscription=sub, is_adjustment=True).total, Decimal("40.00"))
+        self.assertEqual(self.api(self.admin).post(url, {"kind": "credit", "amount": "-5", "note": "x"}, format="json").status_code, 400)
+
+    def test_close_reason_reaches_churn_report(self):
+        sub = self.sub(quantity=2)
+        client = self.api(self.cust)
+        url = f"/api/subscriptions/{sub.pk}/close/"
+        self.assertEqual(client.post(url, {"reason": "bogus"}, format="json").status_code, 400)
+        self.assertEqual(client.post(url, {"reason": "too_expensive"}, format="json").status_code, 200)
+        reasons = self.api(self.admin).get("/api/reports/summary/").data["churn_reasons"]
+        self.assertEqual(reasons, [{"reason": "Too expensive", "count": 1}])
+
+    def test_timeline_records_who_did_what(self):
+        sub = self.sub(quantity=2)
+        client = self.api(self.staff)
+        client.post(f"/api/subscriptions/{sub.pk}/renew/", {}, format="json")
+        event = client.get(f"/api/subscriptions/{sub.pk}/").data["events"][0]
+        self.assertEqual(event["message"], "Renewed")
+        self.assertEqual(event["actor_name"], self.staff.display_name)
+
+    def test_export_is_team_only_and_defuses_formulas(self):
+        evil = User.objects.create_user("evil@x.example", PASSWORD, company="=HYPERLINK(1)")
+        services.bill_subscription(self.sub(quantity=2, customer=evil).pk)
+        self.assertEqual(self.api(self.cust).get("/api/reports/export/invoices/").status_code, 403)
+        response = self.api(self.staff).get("/api/reports/export/invoices/")
+        self.assertEqual(response.status_code, 200)
+        body = b"".join(response.streaming_content).decode()
+        self.assertIn("'=HYPERLINK(1)", body)
+        self.assertEqual(self.api(self.staff).get("/api/reports/export/other/").status_code, 400)
+
+    def test_finance_extras(self):
+        sub = self.sub(quantity=2, months_ago=3)
+        for invoice in services.bill_subscription(sub.pk, services.add_months(self.today, -2)):
+            services.confirm_invoice(invoice.pk)
+        data = self.api(self.admin).get("/api/reports/summary/").data
+        self.assertEqual(data["mrr_by_plan"][0]["plan"], "Monthly")
+        self.assertEqual(data["average_revenue_per_customer"], Decimal("200.00"))
+        self.assertGreater(sum(row["amount"] for row in data["overdue_aging"]), 0)

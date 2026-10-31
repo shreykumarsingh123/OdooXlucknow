@@ -55,7 +55,21 @@ async function request(method, path, body, retried = false) {
   return data
 }
 
+async function download(path, filename) {
+  const send = () => fetch(`${BASE}${path}`, { headers: { Authorization: `Bearer ${tokens.get()}` } })
+  let response = await send()
+  if (response.status === 401 && await refreshAccess()) response = await send()
+  if (!response.ok) throw new ApiError(response.status, await response.json().catch(() => null))
+  const url = URL.createObjectURL(await response.blob())
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(url)
+}
+
 export const api = {
+  download,
   get: (path) => request('GET', path),
   post: (path, body = {}) => request('POST', path, body),
   put: (path, body) => request('PUT', path, body),
