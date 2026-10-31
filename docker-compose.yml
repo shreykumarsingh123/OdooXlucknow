@@ -1,0 +1,54 @@
+# The whole app on one machine, for a local demo: docker compose up --build, then http://localhost:8080
+# DEBUG stays on here, so this is for your own machine only. The site listens on localhost, and the database has no open port.
+services:
+  db:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: brightloop-local
+      MYSQL_DATABASE: brightloop
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-pbrightloop-local"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build: ./backend
+    # Optional keys such as Stripe and Twilio come from .env. The values below replace anything else in it.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DEBUG: "true"
+      SECRET_KEY: local-docker-only
+      ALLOWED_HOSTS: localhost,127.0.0.1,api
+      DB_NAME: brightloop
+      DB_USER: root
+      DB_PASSWORD: brightloop-local
+      DB_HOST: db
+      DB_PORT: "3306"
+      FRONTEND_URL: http://localhost:8080
+      CORS_ALLOWED_ORIGINS: http://localhost:8080
+      PORT: "8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request as u; u.urlopen(u.Request('http://127.0.0.1:8000/api/health/', headers={'Host': 'localhost'}))"]
+      interval: 5s
+      timeout: 5s
+      retries: 40
+      start_period: 30s
+
+  web:
+    build: ./frontend
+    ports:
+      - "127.0.0.1:8080:80"
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  db-data:

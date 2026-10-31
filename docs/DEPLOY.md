@@ -9,7 +9,7 @@ Create a free MySQL service, and find its host, port, user, password, database n
 ## 2. API and website on Render
 
 1. Choose New, then Blueprint, and pick this repository.
-2. Enter only these six values, from Aiven: `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, and `DB_CA_CERT` (the whole certificate text).
+2. Enter these six values from Aiven: `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, and `DB_CA_CERT` (the whole certificate text). Also enter `STRIPE_SECRET_KEY`, a Stripe test key.
 3. Deploy. Render makes `SECRET_KEY`, `SEED_PASSWORD` and `ADMIN_PASSWORD` by itself. The API creates its tables and starting data on first start.
 
 If Render changes a service name because it is taken, correct `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS` and `VITE_API_BASE_URL`, then redeploy both services.
@@ -27,9 +27,8 @@ Add these under Environment on `brightloop-api-shrey`.
 | Feature | Values |
 |---------|--------|
 | Password codes by email, using Brevo | `EMAIL_BACKEND` = `config.email.BrevoEmailBackend`, `BREVO_API_KEY`, and `DEFAULT_FROM_EMAIL` set to your verified Brevo sender |
-| Card payments | `STRIPE_SECRET_KEY`, a newly created Stripe test key |
 
-Without email, Forgot password cannot reach anyone on the live site, and the code is never shown on screen there. Without Stripe, the Pay by card button stays hidden.
+Without email, Forgot password cannot reach anyone on the live site, and the code is never shown on screen there.
 
 ## Limits of the free plans
 

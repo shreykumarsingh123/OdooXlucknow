@@ -3,9 +3,9 @@ name: Deployment image
 on:
   push:
     branches: [main]
-    paths: ["backend/**", "render.yaml", ".github/workflows/image.yml"]
+    paths: ["backend/**", "frontend/**", "docker-compose.yml", "render.yaml", ".github/workflows/image.yml"]
   pull_request:
-    paths: ["backend/**", "render.yaml", ".github/workflows/image.yml"]
+    paths: ["backend/**", "frontend/**", "docker-compose.yml", "render.yaml", ".github/workflows/image.yml"]
 
 permissions:
   contents: read
@@ -53,3 +53,26 @@ jobs:
           for i in $(seq 1 40); do [ "$(code "${H[@]}" $U/api/health/)" = 200 ] && ready=yes && break; sleep 3; done
           [ "$ready" = yes ]
           [ "$(docker logs app 2>&1 | grep -c 'Seeded')" = 1 ]
+
+  compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Start the whole app
+        run: docker compose up -d --build --wait --wait-timeout 300
+      - name: Check it through the website address
+        run: |
+          U=http://localhost:8080
+          J='Content-Type: application/json'
+          code() { curl -s -m 20 -o /dev/null -w '%{http_code}' "$@"; }
+          check() { echo "$1: $2 (want $3)"; [ "$2" = "$3" ]; }
+          check "landing page" "$(code $U/)" 200
+          check "refresh on an inner page" "$(code $U/shop/mb7k2q)" 200
+          curl -s -m 20 $U/shop/mb7k2q | grep -q 'id="root"'
+          check "API through the website" "$(code $U/api/public/sites/mb7k2q/)" 200
+          check "login" "$(code -H "$J" -d '{"email":"asha@admin.com","password":"Brightloop@123"}' $U/api/auth/login/)" 200
+          check "database has no open port" "$(docker compose port db 3306 >/dev/null 2>&1 && echo open || echo closed)" closed
+      - name: Show logs on failure
+        if: failure()
+        run: docker compose logs --tail 40
