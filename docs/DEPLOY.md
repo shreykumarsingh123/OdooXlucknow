@@ -30,6 +30,16 @@ Add these under Environment on `brightloop-api-shrey`.
 
 Without email, Forgot password cannot reach anyone on the live site, and the code is never shown on screen there.
 
+## Run everything in Docker on your own machine
+
+```bash
+docker compose up --build
+```
+
+Then open http://localhost:8080 and sign in with the local seed password in `backend/billing/management/commands/seed_demo.py`. Keys such as Stripe and Twilio are read from `.env`. This runs with `DEBUG` on, so it is for your own machine only.
+
+Render does not use `docker-compose.yml`. It runs the API from `backend/Dockerfile`, and serves the website as a free static site.
+
 ## Limits of the free plans
 
 - The API sleeps after 15 minutes without visits, and the next visit takes about a minute. Open it before a demo.
