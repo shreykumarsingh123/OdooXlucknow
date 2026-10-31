@@ -37,15 +37,20 @@ There are two levels of admin panel. Brightloop runs the platform, and each busi
 
 ```mermaid
 flowchart TD
-  A["Administrator<br/>asha@admin.com<br/>only one allowed"]
-  A --> PS["Brightloop sales<br/>name@adminsale.com"]
-  A --> PC["Brightloop customer care<br/>name@support.com"]
-  A --> O1["Business owner: Manbhwan Foods<br/>name@gmail.com"]
-  A --> O2["Business owner: Sunrise Fitness<br/>name@gmail.com"]
-  O1 --> S1["Sales<br/>nameBUSINESSID@sale.com"]
-  O1 --> C1["Customer care<br/>name.BUSINESSID@support.com"]
-  O1 --> U1["Customers<br/>name@gmail.com"]
-  O2 --> U2["Customers<br/>name@gmail.com"]
+    A["Admin<br/>asha@admin.com<br/>only one allowed"]
+    AS["Admin Sale<br/>name@adminsale.com"]
+    ASup["Admin Support<br/>name@support.com"]
+    U["User<br/>name@gmail.com"]
+    S["Sale<br/>nameBUSINESSID@sale.com"]
+    Sup["Support<br/>name.BUSINESSID@support.com"]
+    C["Customer<br/>name@gmail.com"]
+
+    A --> AS
+    A --> ASup
+    A --> U
+    U --> S
+    U --> Sup
+    U --> C
 ```
 
 ### The address decides the account
