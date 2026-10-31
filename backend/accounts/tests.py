@@ -460,3 +460,16 @@ class DeploymentTests(TestCase):
         self.assertTrue(root.check_password("Admin@Secret7"))
         self.assertFalse(root.check_password("Fresh@Secret9"))
         self.assertTrue(User.objects.get(email="manbhwan@gmail.com").check_password("Fresh@Secret9"))
+
+    @override_settings(EMAIL_BACKEND="config.email.TwilioEmailBackend", TWILIO_API_KEY_SID="key", TWILIO_API_KEY_SECRET="secret")
+    def test_email_goes_through_twilio(self):
+        with patch("config.email.requests.post") as post:
+            sent = mail.send_mail("Hello", "Line <b>one</b>", "Brightloop <me@verified.example>", ["you@example.com"])
+        self.assertEqual(sent, 1)
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["from"], {"address": "me@verified.example", "name": "Brightloop"})
+        self.assertEqual(body["to"], [{"address": "you@example.com"}])
+        self.assertEqual(body["content"]["text"], "Line <b>one</b>")
+        self.assertNotIn("<b>", body["content"]["html"])
+        self.assertEqual(post.call_args.kwargs["auth"], ("key", "secret"))
+

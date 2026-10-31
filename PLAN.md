@@ -111,7 +111,7 @@ Every list and report starts from one business, so composite indexes lead with `
 
 | Item | Why |
 |------|-----|
-| SMTP settings in `.env` | Password codes and invoices are written to files until these are set. `.env.example` shows the Gmail settings. Until then, local development shows the code on screen. |
+| Twilio Email settings in `.env` | Password codes and invoices are written to files until `EMAIL_BACKEND` and a verified `DEFAULT_FROM_EMAIL` are set. Until then, local development shows the code on screen. |
 | `TWILIO_FROM_NUMBER` | SMS stays off without a sender number. |
 | `GOOGLE_CLIENT_ID` | The Google button stays hidden until it is set. |
 | `STRIPE_WEBHOOK_SECRET` | Without it, a payment is recorded only when the customer returns to the site. |
