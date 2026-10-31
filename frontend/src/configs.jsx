@@ -1,6 +1,7 @@
+import { Link } from 'react-router-dom'
 import { Badge, label, money } from './ui'
 
-const active = { key: 'is_active', label: 'Status', render: (r) => <Badge value={r.is_active ? 'active' : 'closed'} /> }
+const active = { key: 'is_active', label: 'Status', render: (r) => <Badge value={r.is_active ? 'active' : 'inactive'} /> }
 const activeField = { name: 'is_active', label: 'Active', type: 'checkbox', default: true }
 const today = new Date().toISOString().slice(0, 10)
 
@@ -9,7 +10,7 @@ const personColumns = [
   { key: 'email', label: 'Email' },
   { key: 'company', label: 'Company' },
   { key: 'phone', label: 'Phone' },
-  { key: 'is_active', label: 'Status', render: (r) => <Badge value={r.is_active ? 'active' : 'closed'} /> },
+  active,
 ]
 const personFields = [
   { name: 'email', label: 'Email', type: 'email', required: true },
@@ -21,15 +22,25 @@ const personFields = [
   activeField,
 ]
 
+const DEPARTMENTS = { '': 'General staff', support: 'Customer care', sales: 'Sales' }
+
 export const customers = {
-  title: 'Customers', singular: 'Customer', path: '/customers/', columns: personColumns, fields: personFields, deletable: false,
+  title: 'Customers', singular: 'Customer', path: '/customers/', deletable: false,
+  columns: [{ key: 'name', label: 'Name', render: (r) => <Link to={`/customers/${r.id}`}>{r.name}</Link> }, ...personColumns.slice(1)],
+  fields: personFields,
   canWrite: (user) => user.role === 'admin' || user.role === 'staff',
   note: 'New customers receive an email link to choose their password.',
 }
 
 export const staff = {
-  title: 'Staff', singular: 'Staff member', path: '/staff/', columns: personColumns, fields: personFields, deletable: false,
-  intro: 'Only the admin can add staff.',
+  title: 'Staff', singular: 'Staff member', path: '/staff/', deletable: false,
+  intro: 'Only the admin can add staff. The department decides what they see.',
+  columns: [personColumns[0], personColumns[1], { key: 'department', label: 'Department', render: (r) => DEPARTMENTS[r.department] }, active],
+  fields: [
+    personFields[0], personFields[1], personFields[2],
+    { name: 'department', label: 'Department', type: 'select-optional', options: Object.entries(DEPARTMENTS).map(([value, text]) => ({ value, label: text })) },
+    personFields[4], activeField,
+  ],
   note: 'New staff receive an email link to choose their password.',
 }
 
@@ -134,12 +145,11 @@ export const templates = {
 }
 
 export const discounts = {
-  title: 'Discounts', singular: 'Discount', path: '/discounts/',
+  title: 'Discounts', singular: 'Discount', path: '/discounts/', filter: { has_code: false },
   intro: 'Live discounts appear on the next invoice automatically, and stop when they expire or run out.',
   columns: [
     { key: 'name', label: 'Name' },
     { key: 'value', label: 'Value', right: true, render: (r) => (r.kind === 'percent' ? `${Number(r.value)}%` : money(r.value)) },
-    { key: 'code', label: 'Code', render: (r) => r.code || 'Automatic' },
     { key: 'scope', label: 'Applies to', render: (r) => (r.scope === 'products' ? 'Specific products' : 'Whole subscriptions') },
     { key: 'dates', label: 'Dates', render: (r) => `${r.start_date} to ${r.end_date || 'open'}` },
     { key: 'used', label: 'Used', right: true, render: (r) => `${r.times_used}${r.usage_limit ? ` of ${r.usage_limit}` : ''}` },
@@ -149,7 +159,6 @@ export const discounts = {
     { name: 'name', label: 'Name', required: true },
     { name: 'kind', label: 'Type', type: 'select', default: 'percent', required: true, options: [{ value: 'percent', label: 'Percentage' }, { value: 'fixed', label: 'Fixed amount' }] },
     { name: 'value', label: 'Value', type: 'number', required: true },
-    { name: 'code', label: 'Promo code', help: 'Optional. With a code, the discount applies only to subscriptions that redeem it.' },
     { name: 'scope', label: 'Applies to', type: 'select', default: 'products', required: true, options: [{ value: 'products', label: 'Specific products' }, { value: 'subscriptions', label: 'Whole subscriptions' }] },
     { name: 'products', label: 'Products', type: 'multi', source: '/products/', when: (v) => v.scope === 'products' },
     { name: 'subscriptions', label: 'Subscriptions', type: 'search-multi', path: '/subscriptions/', display: (s) => `${s.number} · ${s.customer_name}`, when: (v) => v.scope === 'subscriptions' },
@@ -159,5 +168,58 @@ export const discounts = {
     { name: 'end_date', label: 'End date', type: 'date' },
     { name: 'usage_limit', label: 'Usage limit', type: 'number', help: 'Leave empty for no limit.' },
     activeField,
+  ],
+}
+
+const REWARD_TEXT = { discount: 'Discount', credit: 'Account credit', free_days: 'Free days', perk: 'Perk' }
+
+function rewardValue(r) {
+  if (r.reward === 'perk') return r.perk_text
+  if (r.reward === 'free_days') return `${Number(r.value)} days`
+  if (r.reward === 'credit') return money(r.value)
+  return r.kind === 'percent' ? `${Number(r.value)}% off` : `${money(r.value)} off`
+}
+
+export const promoCodes = {
+  title: 'Promo codes', singular: 'Promo code', path: '/discounts/', filter: { has_code: true },
+  intro: 'Customers enter a code on their subscription. It can give a discount, money, free days or another perk, once per subscription.',
+  columns: [
+    { key: 'code', label: 'Code', render: (r) => <b>{r.code}</b> },
+    { key: 'name', label: 'Name' },
+    { key: 'reward', label: 'Gives', render: (r) => REWARD_TEXT[r.reward] },
+    { key: 'value', label: 'Worth', render: rewardValue },
+    { key: 'dates', label: 'Dates', render: (r) => `${r.start_date} to ${r.end_date || 'open'}` },
+    { key: 'used', label: 'Used', right: true, render: (r) => `${r.times_used}${r.usage_limit ? ` of ${r.usage_limit}` : ''}` },
+    active,
+  ],
+  fields: [
+    { name: 'code', label: 'Code', required: true, help: 'For example WELCOME20. Letter case does not matter.' },
+    { name: 'name', label: 'Name', required: true, help: 'Customers see this on their subscription.' },
+    { name: 'reward', label: 'What it gives', type: 'select', default: 'discount', required: true, options: [{ value: 'discount', label: 'Straight discount on invoices' }, { value: 'credit', label: 'Money added to the account' }, { value: 'free_days', label: 'Free days before the next invoice' }, { value: 'perk', label: 'Another perk' }] },
+    { name: 'kind', label: 'Discount type', type: 'select', default: 'percent', required: true, options: [{ value: 'percent', label: 'Percentage' }, { value: 'fixed', label: 'Fixed amount' }], when: (v) => v.reward === 'discount' },
+    { name: 'value', label: 'Value', type: 'number', help: 'The percentage, the amount of money, or the number of days.', when: (v) => v.reward !== 'perk' },
+    { name: 'perk_text', label: 'What the customer gets', help: 'For example: a free onboarding call.', when: (v) => v.reward === 'perk' },
+    { name: 'scope', label: '', default: 'subscriptions', when: () => false },
+    { name: 'min_purchase', label: 'Minimum purchase', type: 'number', default: 0, when: (v) => v.reward === 'discount' },
+    { name: 'min_quantity', label: 'Minimum quantity', type: 'number', default: 0, when: (v) => v.reward === 'discount' },
+    { name: 'start_date', label: 'Start date', type: 'date', default: today, required: true },
+    { name: 'end_date', label: 'End date', type: 'date' },
+    { name: 'usage_limit', label: 'Usage limit', type: 'number', help: 'Leave empty for no limit.' },
+    activeField,
+  ],
+}
+
+export const salesTargets = {
+  title: 'Sales targets', singular: 'Target', path: '/sales-targets/',
+  intro: 'New monthly recurring revenue each salesperson should sell in a month.',
+  columns: [
+    { key: 'salesperson_name', label: 'Salesperson' },
+    { key: 'month', label: 'Month', render: (r) => r.month.slice(0, 7) },
+    { key: 'amount', label: 'Target', right: true, render: (r) => money(r.amount) },
+  ],
+  fields: [
+    { name: 'salesperson', label: 'Salesperson', type: 'select', source: '/staff/?department=sales', required: true },
+    { name: 'month', label: 'Any day in the month', type: 'date', default: today, required: true },
+    { name: 'amount', label: 'Target', type: 'number', required: true },
   ],
 }

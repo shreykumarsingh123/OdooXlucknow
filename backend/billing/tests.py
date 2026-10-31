@@ -10,7 +10,7 @@ from rest_framework.test import APIClient
 
 from accounts.models import User
 from billing import notify, revenue, services
-from billing.models import Invoice, Payment, Subscription
+from billing.models import Invoice, Payment, PaymentRequest, SalesTarget, Subscription
 from catalog.models import Discount, PaymentTerm, Plan, Product, ProductVariant, Tax
 from config.api import Conflict
 
@@ -183,8 +183,9 @@ class LifecycleTests(Base):
         )
         sub = self.sub(plan=locked)
         client = self.api(self.cust)
-        for step in ["pause", "close", "renew"]:
+        for step in ["pause", "close"]:
             self.assertEqual(client.post(f"/api/subscriptions/{sub.pk}/{step}/").status_code, 409, step)
+        self.assertEqual(self.api(self.staff).post(f"/api/subscriptions/{sub.pk}/renew/").status_code, 409)
 
     def test_customer_can_pause_and_resume_own(self):
         sub = self.sub()
@@ -289,8 +290,11 @@ class BillingTests(Base):
         self.assertEqual(services.run_billing()["invoices_created"], 0)
 
     def test_no_billing_past_expiry(self):
-        self.sub(months_ago=6, months_long=2)
+        sub = self.sub(months_ago=6, months_long=2)
+        Subscription.objects.filter(pk=sub.pk).update(auto_renew=False)
         self.assertEqual(services.run_billing()["invoices_created"], 3)
+        sub.refresh_from_db()
+        self.assertEqual(sub.state, "closed")
 
     def test_invoice_state_machine(self):
         self.sub()
@@ -788,7 +792,7 @@ class GrowthFeatureTests(Base):
         client = self.api(self.staff)
         client.post(f"/api/subscriptions/{sub.pk}/renew/", {}, format="json")
         event = client.get(f"/api/subscriptions/{sub.pk}/").data["events"][0]
-        self.assertEqual(event["message"], "Renewed")
+        self.assertEqual(event["message"], "Renewed by the team")
         self.assertEqual(event["actor_name"], self.staff.display_name)
 
     def test_export_is_team_only_and_defuses_formulas(self):
@@ -892,4 +896,282 @@ class RevenueRecognitionTests(Base):
         invoice = self.issued(date(2026, 1, 1), date(2026, 1, 31))
         self.assertEqual(self.api(self.cust).get(f"/api/invoices/{invoice.pk}/recognition/").status_code, 403)
         self.assertEqual(len(self.api(self.staff).get(f"/api/invoices/{invoice.pk}/recognition/").data), 1)
+
+
+class BusinessFeatureTests(Base):
+    def setUp(self):
+        super().setUp()
+        self.care = User.objects.create_user("care@x.example", PASSWORD, role="staff", department="support")
+        self.seller = User.objects.create_user("sell@x.example", PASSWORD, role="staff", department="sales")
+        self.seller2 = User.objects.create_user("sell2@x.example", PASSWORD, role="staff", department="sales")
+        self.fee = Plan.objects.create(name="Fee", price=Decimal("300"), billing_period="monthly", start_date=self.today - timedelta(days=9), is_public=True)
+
+    # ---- automatic renewal
+    def test_customer_has_no_renew_button_or_endpoint(self):
+        sub = self.sub()
+        client = self.api(self.cust)
+        self.assertEqual(client.post(f"/api/subscriptions/{sub.pk}/renew/").status_code, 403)
+        self.assertNotIn("renew", client.get(f"/api/subscriptions/{sub.pk}/").data["allowed_actions"])
+        self.assertIn("auto_renew", client.get(f"/api/subscriptions/{sub.pk}/").data["allowed_actions"])
+
+    def test_renews_by_itself_past_expiry_and_keeps_billing(self):
+        sub = self.sub(quantity=2, months_ago=2, months_long=1)
+        result = services.run_billing()
+        sub.refresh_from_db()
+        self.assertEqual(result["subscriptions_renewed"], 1)
+        self.assertEqual(sub.state, "active")
+        self.assertGreaterEqual(sub.expiry_date, self.today)
+        self.assertEqual(Invoice.objects.filter(subscription=sub).count(), 3)
+
+    def test_renewal_extends_by_one_term_not_a_growing_one(self):
+        sub = self.sub(months_ago=1, months_long=1)
+        days = sub.term_days
+        Subscription.objects.filter(pk=sub.pk).update(expiry_date=self.today - timedelta(days=1), term_days=days)
+        services.renew_due()
+        sub.refresh_from_db()
+        self.assertEqual(sub.expiry_date, self.today - timedelta(days=1) + timedelta(days=days))
+
+    def test_opt_out_ends_at_expiry(self):
+        sub = self.sub(months_ago=2, months_long=1)
+        client = self.api(self.cust)
+        self.assertEqual(client.post(f"/api/subscriptions/{sub.pk}/auto_renew/", {"enabled": False}, format="json").status_code, 200)
+        services.run_billing()
+        sub.refresh_from_db()
+        self.assertEqual(sub.state, "closed")
+
+    def test_other_customer_cannot_opt_out(self):
+        sub = self.sub()
+        self.assertEqual(self.api(self.other).post(f"/api/subscriptions/{sub.pk}/auto_renew/", {"enabled": False}, format="json").status_code, 404)
+
+    # ---- promo codes
+    def promo(self, **extra):
+        body = {"name": "P", "code": "promo1", "start_date": str(self.today), **extra}
+        return self.api(self.admin).post("/api/discounts/", body, format="json")
+
+    def redeem(self, sub, code="PROMO1"):
+        return self.api(self.cust).post(f"/api/subscriptions/{sub.pk}/redeem/", {"code": code}, format="json")
+
+    def test_only_admin_creates_promo_codes(self):
+        body = {"name": "P", "code": "X", "reward": "credit", "value": "5", "start_date": str(self.today)}
+        self.assertEqual(self.api(self.staff).post("/api/discounts/", body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.care).post("/api/discounts/", body, format="json").status_code, 403)
+
+    def test_promo_validation(self):
+        self.assertEqual(self.promo(reward="credit").status_code, 400)
+        self.assertEqual(self.promo(reward="free_days", value="2.5").status_code, 400)
+        self.assertEqual(self.promo(reward="perk").status_code, 400)
+        self.assertEqual(self.api(self.admin).post("/api/discounts/", {"name": "N", "reward": "credit", "value": "5", "start_date": str(self.today)}, format="json").status_code, 400)
+
+    def test_list_filter_separates_codes_from_rules(self):
+        self.assertEqual(self.promo(reward="credit", value="5").status_code, 201)
+        Discount.objects.create(name="Plain", value=Decimal("5"), start_date=self.today)
+        client = self.api(self.admin)
+        self.assertEqual([r["name"] for r in client.get("/api/discounts/?has_code=true").data["results"]], ["P"])
+        self.assertEqual([r["name"] for r in client.get("/api/discounts/?has_code=false").data["results"]], ["Plain"])
+
+    def test_credit_code_gives_money_once(self):
+        self.promo(reward="credit", value="150")
+        sub = self.sub()
+        self.assertEqual(self.redeem(sub).status_code, 200)
+        self.assertEqual(self.redeem(sub).status_code, 409)
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("150.00"))
+        self.assertEqual(services.bill_subscription(sub.pk)[0].credit_applied, Decimal("150.00"))
+
+    def test_free_days_code_moves_next_invoice_and_keeps_periods_full(self):
+        self.promo(reward="free_days", value="30")
+        sub = self.sub(quantity=2)
+        services.bill_subscription(sub.pk)
+        before = Subscription.objects.get(pk=sub.pk).next_invoice_date
+        self.redeem(sub)
+        sub.refresh_from_db()
+        self.assertEqual(sub.next_invoice_date, before + timedelta(days=30))
+
+    def test_perk_code_is_recorded_and_changes_no_invoice(self):
+        self.promo(reward="perk", perk_text="Free onboarding call")
+        sub = self.sub(quantity=2)
+        response = self.redeem(sub)
+        self.assertEqual(response.data["promotions"], ["Free onboarding call"])
+        self.assertEqual(services.bill_subscription(sub.pk)[0].discount_total, Decimal("0.00"))
+        self.assertEqual(Discount.objects.get(code="PROMO1").times_used, 1)
+
+    def test_usage_limit_stops_a_credit_code(self):
+        self.promo(reward="credit", value="10", usage_limit=1)
+        self.assertEqual(self.redeem(self.sub()).status_code, 200)
+        self.assertEqual(self.redeem(self.sub()).status_code, 400)
+
+    # ---- departments
+    def test_care_and_sales_cannot_reach_finance(self):
+        for user in (self.care, self.seller):
+            client = self.api(user)
+            for path in ["/api/reports/summary/", "/api/reports/revenue/", "/api/payments/", "/api/reports/export/invoices/", "/api/imports/sample/"]:
+                self.assertEqual(client.get(path).status_code, 403, path)
+            self.assertEqual(client.post("/api/billing/run/").status_code, 403)
+
+    def test_sales_sees_only_what_they_sold(self):
+        mine = self.sub()
+        theirs = self.sub()
+        Subscription.objects.filter(pk=mine.pk).update(salesperson=self.seller)
+        Subscription.objects.filter(pk=theirs.pk).update(salesperson=self.seller2)
+        invoice = services.bill_subscription(mine.pk)[0]
+        other_invoice = services.bill_subscription(theirs.pk)[0]
+        client = self.api(self.seller)
+        self.assertEqual([r["id"] for r in client.get("/api/subscriptions/").data["results"]], [mine.pk])
+        self.assertEqual(client.get(f"/api/subscriptions/{theirs.pk}/").status_code, 404)
+        self.assertEqual(client.get(f"/api/invoices/{invoice.pk}/").status_code, 200)
+        self.assertEqual(client.get(f"/api/invoices/{other_invoice.pk}/").status_code, 404)
+        self.assertEqual(client.post(f"/api/invoices/{invoice.pk}/confirm/").status_code, 403)
+
+    def test_quote_made_by_sales_is_credited_to_them(self):
+        body = {
+            "customer": self.cust.pk, "plan": self.plan.pk, "payment_term": self.term.pk, "start_date": str(self.today),
+            "expiry_date": str(self.today + timedelta(days=30)), "salesperson": self.seller2.pk,
+            "lines": [{"product": self.product.pk, "quantity": 2}],
+        }
+        response = self.api(self.seller).post("/api/subscriptions/", body, format="json")
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(Subscription.objects.get(pk=response.data["id"]).salesperson, self.seller)
+
+    def test_sales_report_against_target(self):
+        sub = self.sub(quantity=5)
+        Subscription.objects.filter(pk=sub.pk).update(salesperson=self.seller)
+        SalesTarget.objects.create(salesperson=self.seller, month=self.today.replace(day=1), amount=Decimal("1000"))
+        data = self.api(self.seller).get("/api/reports/sales/").data
+        self.assertEqual(data["target"], Decimal("1000.00"))
+        self.assertEqual(data["sold"], Decimal("500.00"))
+        self.assertEqual(data["progress"], 50.0)
+        self.assertEqual(data["customers"][0]["number"], sub.number)
+        self.assertEqual(len(data["history"]), 6)
+        other = self.api(self.seller).get(f"/api/reports/sales/?salesperson={self.seller2.pk}").data
+        self.assertEqual(other["name"], self.seller.display_name)
+        self.assertEqual(self.api(self.care).get("/api/reports/sales/").status_code, 403)
+        self.assertEqual(self.api(self.cust).get("/api/reports/sales/").status_code, 403)
+        self.assertEqual(len(self.api(self.admin).get("/api/reports/sales/").data["team"]), 2)
+
+    def test_only_admin_sets_targets_and_month_is_normalised(self):
+        body = {"salesperson": self.seller.pk, "month": "2026-03-17", "amount": "100"}
+        self.assertEqual(self.api(self.staff).post("/api/sales-targets/", body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.seller).post("/api/sales-targets/", body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.admin).post("/api/sales-targets/", body, format="json").data["month"], "2026-03-01")
+        self.assertEqual(self.api(self.admin).post("/api/sales-targets/", body, format="json").status_code, 400)
+
+    # ---- payment approval
+    def confirmed(self):
+        sub = self.sub(quantity=2)
+        invoice = services.bill_subscription(sub.pk)[0]
+        services.confirm_invoice(invoice.pk)
+        return Invoice.objects.get(pk=invoice.pk)
+
+    def ask(self, invoice, user=None, **extra):
+        body = {"method": "upi", "amount": str(invoice.total), "reference": "ref 1", **extra}
+        return self.api(user or self.cust).post(f"/api/invoices/{invoice.pk}/request_payment/", body, format="json")
+
+    def test_payment_request_changes_nothing_until_approved(self):
+        invoice = self.confirmed()
+        self.assertEqual(self.ask(invoice).status_code, 201)
+        self.assertEqual(self.ask(invoice).status_code, 409)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.state, "confirmed")
+        self.assertEqual(invoice.amount_paid, 0)
+        row = PaymentRequest.objects.get(invoice=invoice)
+        self.assertEqual(self.api(self.staff).post(f"/api/payment-requests/{row.pk}/approve/").status_code, 403)
+        self.assertEqual(self.api(self.cust).post(f"/api/payment-requests/{row.pk}/approve/").status_code, 403)
+        self.assertEqual(self.api(self.admin).post(f"/api/payment-requests/{row.pk}/approve/").status_code, 200)
+        invoice.refresh_from_db()
+        self.assertEqual(invoice.state, "paid")
+        self.assertEqual(self.api(self.admin).post(f"/api/payment-requests/{row.pk}/approve/").status_code, 409)
+        self.assertEqual(Payment.objects.filter(invoice=invoice).count(), 1)
+
+    def test_rejected_request_records_nothing(self):
+        invoice = self.confirmed()
+        self.ask(invoice)
+        row = PaymentRequest.objects.get(invoice=invoice)
+        self.assertEqual(self.api(self.admin).post(f"/api/payment-requests/{row.pk}/reject/", {"note": "No money received"}, format="json").status_code, 200)
+        self.assertFalse(Payment.objects.filter(invoice=invoice).exists())
+
+    def test_payment_request_limits(self):
+        invoice = self.confirmed()
+        self.assertEqual(self.ask(invoice, amount="999999").status_code, 400)
+        self.assertEqual(self.ask(invoice, method="online").status_code, 400)
+        self.assertEqual(self.ask(invoice, user=self.other).status_code, 404)
+        self.assertEqual(self.ask(invoice, user=self.staff).status_code, 403)
+
+    # ---- account view and assigned plans
+    def test_customer_overview(self):
+        self.sub(quantity=2)
+        client = self.api(self.care)
+        data = client.get(f"/api/customers/{self.cust.pk}/overview/").data
+        self.assertEqual(data["status"], "active")
+        self.assertEqual(data["subscriptions"][0]["plan_name"], "Monthly")
+        self.assertEqual(self.api(self.cust).get(f"/api/customers/{self.cust.pk}/overview/").status_code, 403)
+        self.assertEqual(self.api(self.seller).get(f"/api/customers/{self.cust.pk}/overview/").status_code, 403)
+        self.assertEqual(client.get(f"/api/customers/{self.admin.pk}/overview/").status_code, 404)
+
+    def test_only_admin_assigns_any_plan(self):
+        url = f"/api/customers/{self.cust.pk}/assign_plan/"
+        private = Plan.objects.create(name="Private", price=Decimal("50"), billing_period="yearly", start_date=self.today, min_quantity=9)
+        self.assertEqual(self.api(self.staff).post(url, {"plan": private.pk}, format="json").status_code, 403)
+        response = self.api(self.admin).post(url, {"plan": private.pk}, format="json")
+        self.assertEqual(response.status_code, 201)
+        sub = Subscription.objects.get(pk=response.data["id"])
+        self.assertEqual((sub.state, sub.plan), ("active", private))
+        self.assertEqual(sub.invoices.get().state, "confirmed")
+        self.assertEqual(self.api(self.admin).post(url, {"plan": private.pk}, format="json").status_code, 409)
+
+    def test_assign_can_replace_only_that_customers_subscription(self):
+        old = self.sub()
+        stranger = self.sub(customer=self.other)
+        url = f"/api/customers/{self.cust.pk}/assign_plan/"
+        client = self.api(self.admin)
+        self.assertEqual(client.post(url, {"plan": self.fee.pk, "replace": stranger.pk}, format="json").status_code, 400)
+        self.assertEqual(client.post(url, {"plan": self.fee.pk, "replace": old.pk}, format="json").status_code, 201)
+        old.refresh_from_db()
+        stranger.refresh_from_db()
+        self.assertEqual((old.state, stranger.state), ("closed", "active"))
+
+    def test_starting_a_plan_online_gives_an_invoice_to_pay(self):
+        response = self.api(self.cust).post("/api/subscriptions/start/", {"plan": self.fee.pk}, format="json")
+        invoice = Invoice.objects.get(subscription_id=response.data["id"])
+        self.assertEqual(invoice.state, "confirmed")
+        self.assertEqual(invoice.total, Decimal("300.00"))
+
+    # ---- import
+    CSV = "email,first_name,company,plan,product,quantity,start_date\nnew@buyer.example,Nia,Nia Co,Fee,Seat,3,{start}\n"
+
+    def imported(self, text, commit=True, user=None):
+        return self.api(user or self.admin).post("/api/imports/subscribers/", {"csv": text, "commit": commit}, format="json")
+
+    def test_preview_writes_nothing(self):
+        data = self.imported(self.CSV.format(start=self.today), commit=False).data
+        self.assertEqual((data["ready"], data["errors"]), (1, 0))
+        self.assertFalse(User.objects.filter(email="new@buyer.example").exists())
+
+    def test_import_creates_subscriber_without_back_billing_and_only_once(self):
+        start = self.today - timedelta(days=95)
+        self.assertEqual(self.imported(self.CSV.format(start=start)).data["imported"], 1)
+        sub = Subscription.objects.get(customer__email="new@buyer.example")
+        self.assertEqual((sub.state, sub.recurring_total), ("active", Decimal("600.00")))
+        self.assertGreaterEqual(sub.next_invoice_date, self.today)
+        services.run_billing(self.today - timedelta(days=1))
+        self.assertEqual(Invoice.objects.filter(subscription=sub).count(), 0)
+        self.assertFalse(User.objects.get(email="new@buyer.example").has_usable_password())
+        self.assertEqual(self.imported(self.CSV.format(start=start)).data["skipped"], 1)
+        self.assertEqual(Subscription.objects.filter(customer__email="new@buyer.example").count(), 1)
+
+    def test_bad_rows_are_reported_and_good_rows_still_import(self):
+        text = "email,plan,start_date,quantity\nbad,Fee,,\na@b.example,Nope,,\nc@b.example,Fee,2026-13-99,\nd@b.example,Fee,,0\nstaff@x.example,Fee,,\ne@b.example,Fee,,\n"
+        data = self.imported(text).data
+        self.assertEqual((data["imported"], data["errors"]), (1, 5))
+
+    def test_import_checks_shape_and_access(self):
+        self.assertEqual(self.imported("").status_code, 400)
+        self.assertEqual(self.imported("name,age\nx,1\n").status_code, 400)
+        self.assertEqual(self.imported(self.CSV.format(start=self.today), user=self.care).status_code, 403)
+        self.assertEqual(self.imported(self.CSV.format(start=self.today), user=self.cust).status_code, 403)
+
+    def test_sample_data_imports_cleanly(self):
+        sample = self.api(self.admin).get("/api/imports/sample/").data["csv"]
+        data = self.imported(sample).data
+        self.assertEqual(data["errors"], 0)
+        self.assertEqual(data["imported"], 8)
 

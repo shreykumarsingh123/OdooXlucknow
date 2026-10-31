@@ -61,6 +61,16 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | R-34 | Subscription activity timeline | Shows what happened, who did it and when |
 | R-35 | Revenue per customer, recurring revenue by plan, overdue aging, churn reasons, CSV exports | Numbers match a manual count; exports are team-only and defuse spreadsheet formulas |
 | R-36 | Customer profile page | Customers edit their own details |
+| R-39 | Back button never looks like a logout | A signed-in user going to `/login` lands in the app; a failed connection keeps the session |
+| R-40 | Automatic renewal with opt-out | Customers have no Renew; a subscription past expiry rolls over; opted-out ones end at expiry after final billing |
+| R-41 | Clear labels | Setup records show Inactive, not Closed; customers do not see the internal stepper |
+| R-42 | Promo codes give a discount, money, free days or a perk, set by the admin | Only admin creates; once per subscription; usage limit holds |
+| R-43 | Customer care login and tickets | Customers see own tickets, never internal notes; care sees all; sales sees none |
+| R-44 | Team chat between the admin and staff | Customers get 403 |
+| R-45 | Sales login with customers, monthly targets and metrics | Sales sees only what they sold; only admin sets targets |
+| R-46 | Admin approves payments made outside Stripe | Nothing recorded until approved; approved once only |
+| R-47 | Admin sees a customer's account and assigns any active plan | Only admin assigns; replace limited to that customer's subscriptions |
+| R-48 | Import subscribers from CSV, with a sample data button | Preview writes nothing; no back-billing; a repeat import creates nothing |
 | R-38 | Revenue page: revenue recognition, analysis and history | Invoice months add up exactly to its net amount; tax, drafts and cancelled invoices left out; deferred matches a manual count; team only |
 | R-37 | Animated public landing page before the app | Shown at `/` when logged out; prices come from the API; reduced motion respected |
 
@@ -81,5 +91,9 @@ The project owner supplied Stripe and Twilio keys and allowed ideas from product
 | A-11 | Pause is an extra state beside Active, since the brief allows pausing | |
 | A-12 | A customer starting a public plan online goes straight to Active, for 12 months, on the shortest payment term. Only plans with a price and a minimum quantity of 1 qualify | `start_plan` service |
 | A-13 | Plan changes take effect at once, only between plans with the same billing period, and prorate the plan fee by days left in the billed period | `change_plan` service |
+| A-16 | One deployment serves one business. Many businesses on one deployment is planned separately | PLAN.md |
+| A-17 | A sale counts in the month it was activated, at its monthly recurring value before tax | `_sales_figures` |
+| A-18 | Imported subscribers have paid for past periods elsewhere, so billing starts at the next date due | `billing/imports.py` |
+| A-19 | Customer care and sales cannot see finance reports or record payments | `IsBackOffice` |
 | A-15 | Revenue is earned evenly per day over the invoice period, before tax, and from Confirmed. Breakdowns use the plan the subscription is on now. A late invoice is recognized in the period it covers | `billing/revenue.py` |
 | A-14 | One-off charges and credits are admin-only, in line with discount rules | One permission check |

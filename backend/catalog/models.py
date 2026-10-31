@@ -129,9 +129,17 @@ class Discount(models.Model):
         PRODUCTS = "products", "Specific products"
         SUBSCRIPTIONS = "subscriptions", "Whole subscriptions"
 
+    class Reward(models.TextChoices):
+        DISCOUNT = "discount", "Discount on invoices"
+        CREDIT = "credit", "Money added to the account"
+        FREE_DAYS = "free_days", "Free days before the next invoice"
+        PERK = "perk", "Other perk"
+
     name = models.CharField(max_length=120, unique=True)
     kind = models.CharField(max_length=10, choices=Kind.choices, default=Kind.PERCENT)
-    value = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal("0.01"))])
+    value = models.DecimalField(max_digits=12, decimal_places=2, default=0, validators=NON_NEGATIVE)
+    reward = models.CharField(max_length=10, choices=Reward.choices, default=Reward.DISCOUNT)
+    perk_text = models.CharField(max_length=200, blank=True)
     scope = models.CharField(max_length=15, choices=Scope.choices, default=Scope.PRODUCTS)
     min_purchase = models.DecimalField(max_digits=12, decimal_places=2, default=0, validators=NON_NEGATIVE)
     min_quantity = models.PositiveIntegerField(default=0)

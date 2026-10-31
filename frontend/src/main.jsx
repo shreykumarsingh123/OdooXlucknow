@@ -7,6 +7,7 @@ import * as configs from './configs'
 import { Landing } from './landing'
 import { BrowsePlans, Dashboard, InvoiceDetail, Invoices, Payments, Profile, Revenue, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
 import './styles.css'
+import { CustomerDetail, ImportSubscribers, PaymentApprovals, Sales, TeamChat, TicketDetail, Tickets } from './team'
 import { ErrorBox, Field, ToastProvider } from './ui'
 
 const AuthContext = createContext(null)
@@ -15,10 +16,19 @@ export const useAuth = () => useContext(AuthContext)
 function AuthProvider({ children }) {
   const [user, setUser] = useState(null)
   const [ready, setReady] = useState(!tokens.get())
+  const [offline, setOffline] = useState(false)
 
-  useEffect(() => {
-    if (tokens.get()) api.get('/auth/me/').then(setUser).catch(() => tokens.clear()).finally(() => setReady(true))
+  const restore = useCallback(() => {
+    setOffline(false)
+    if (!tokens.get()) return
+    api.get('/auth/me/')
+      .then((me) => { setUser(me); setReady(true) })
+      .catch((err) => {
+        // Only the server saying no ends a session. A failed connection must not log anyone out.
+        if (err.status === 401) { tokens.clear(); setReady(true) } else setOffline(true)
+      })
   }, [])
+  useEffect(restore, [restore])
 
   const login = useCallback(async (email, password) => {
     const pair = await api.post('/auth/login/', { email: email.trim().toLowerCase(), password })
@@ -35,6 +45,7 @@ function AuthProvider({ children }) {
     setUser(null)
   }, [])
   const value = useMemo(() => ({ user, login, loginWithGoogle, logout }), [user, login, loginWithGoogle, logout])
+  if (offline) return <div className="pad"><p>We cannot reach the server right now. You are still signed in.</p><button onClick={restore}>Try again</button></div>
   if (!ready) return <p className="muted pad">Loading…</p>
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
@@ -64,7 +75,6 @@ function AuthCard({ title, children, footer }) {
 
 function GoogleButton() {
   const { loginWithGoogle } = useAuth()
-  const navigate = useNavigate()
   const holder = useRef(null)
   const [enabled, setEnabled] = useState(false)
   const [error, setError] = useState(null)
@@ -78,7 +88,7 @@ function GoogleButton() {
         if (!live || !holder.current) return
         window.google.accounts.id.initialize({
           client_id: config.google_client_id,
-          callback: ({ credential }) => loginWithGoogle(credential).then(() => navigate('/')).catch(setError),
+          callback: ({ credential }) => loginWithGoogle(credential).catch(setError),
         })
         window.google.accounts.id.renderButton(holder.current, { theme: 'outline', size: 'large', width: 320, text: 'continue_with' })
       }
@@ -90,7 +100,7 @@ function GoogleButton() {
       document.head.appendChild(script)
     }).catch(() => {})
     return () => { live = false }
-  }, [loginWithGoogle, navigate])
+  }, [loginWithGoogle])
 
   if (!enabled) return null
   return (
@@ -123,13 +133,9 @@ const PASSWORD_HELP = 'More than eight characters, with an uppercase letter, a l
 
 function Login() {
   const { login } = useAuth()
-  const navigate = useNavigate()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const { error, busy, submit } = useSubmit(async () => {
-    await login(email, password)
-    navigate('/')
-  })
+  const { error, busy, submit } = useSubmit(() => login(email, password))
   return (
     <AuthCard title="Sign in" footer={<>New here? <Link to="/signup">Create an account</Link></>}>
       <form className="form" onSubmit={submit}>
@@ -138,6 +144,7 @@ function Login() {
         <Field label="Password"><input type="password" autoComplete="current-password" required value={password} onChange={(e) => setPassword(e.target.value)} /></Field>
         <button className="primary wide" disabled={busy}>{busy ? 'Signing in…' : 'Sign in'}</button>
         <Link to="/forgot-password">Forgot your password?</Link>
+        <a href={import.meta.env.VITE_ADMIN_URL || 'http://localhost:8000/admin/'}>Open the database admin</a>
       </form>
       <GoogleButton />
     </AuthCard>
@@ -146,14 +153,11 @@ function Login() {
 
 function Signup() {
   const { login } = useAuth()
-  const navigate = useNavigate()
-  const [params] = useSearchParams()
   const [form, setForm] = useState({ email: '', password: '', first_name: '', last_name: '', company: '', phone: '' })
   const set = (name) => (e) => setForm((f) => ({ ...f, [name]: e.target.value }))
   const { error, busy, submit } = useSubmit(async () => {
     await api.post('/auth/signup/', form)
     await login(form.email, form.password)
-    navigate(params.get('next') === 'plans' ? '/browse-plans' : '/')
   })
   return (
     <AuthCard title="Create your account" footer={<>Already registered? <Link to="/login">Sign in</Link></>}>
@@ -226,6 +230,13 @@ const ICONS = {
   '/discounts': 'M3 12V3h9l9 9-9 9zM8 8h.01',
   '/payment-terms': 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20M12 6v6l4 2',
   '/staff': 'M12 2l8 4v6c0 5-3.5 8.5-8 10-4.5-1.5-8-5-8-10V6z',
+  '/tickets': 'M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z',
+  '/team-chat': 'M17 8h2a2 2 0 0 1 2 2v11l-4-4h-6a2 2 0 0 1-2-2v-1M15 3H5a2 2 0 0 0-2 2v10l4-4h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2',
+  '/sales': 'M12 2v20M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6',
+  '/sales-targets': 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8',
+  '/promo-codes': 'M20 12v8H4v-8M2 7h20v5H2zM12 22V7M12 7H8a2.5 2.5 0 1 1 2-4zM12 7h4a2.5 2.5 0 1 0-2-4z',
+  '/payment-approvals': 'M22 11v1a10 10 0 1 1-6-9.1M22 4L12 14l-3-3',
+  '/import': 'M21 15v6H3v-6M7 10l5 5 5-5M12 15V3',
 }
 
 function NavIcon({ to }) {
@@ -238,10 +249,17 @@ function NavIcon({ to }) {
 
 const BILLING = [['/', 'Dashboard'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices'], ['/payments', 'Payments'], ['/revenue', 'Revenue'], ['/customers', 'Customers']]
 const CATALOG = [['/products', 'Products'], ['/plans', 'Plans'], ['/templates', 'Quotation templates'], ['/taxes', 'Taxes'], ['/discounts', 'Discounts'], ['/payment-terms', 'Payment terms']]
+const PEOPLE = [['/tickets', 'Tickets'], ['/team-chat', 'Team chat']]
 const NAV = {
-  admin: [['Billing', BILLING], ['Setup', [...CATALOG, ['/staff', 'Staff']]]],
-  staff: [['Billing', BILLING], ['Reference', CATALOG]],
-  customer: [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices'], ['/browse-plans', 'Browse plans']]]],
+  admin: [
+    ['Billing', [...BILLING, ['/payment-approvals', 'Payment approvals']]],
+    ['People', [...PEOPLE, ['/sales', 'Sales team']]],
+    ['Setup', [...CATALOG, ['/promo-codes', 'Promo codes'], ['/sales-targets', 'Sales targets'], ['/import', 'Import subscribers'], ['/staff', 'Staff']]],
+  ],
+  staff: [['Billing', BILLING], ['People', [...PEOPLE, ['/sales', 'Sales team']]], ['Setup', [['/import', 'Import subscribers']]], ['Reference', CATALOG]],
+  support: [['Customer care', [...PEOPLE, ['/customers', 'Customers'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices']]], ['Reference', CATALOG]],
+  sales: [['Sales', [['/sales', 'My sales'], ['/subscriptions', 'My subscriptions'], ['/invoices', 'Their invoices'], ['/customers', 'Customers'], ['/team-chat', 'Team chat']]], ['Reference', CATALOG]],
+  customer: [['My account', [['/subscriptions', 'My subscriptions'], ['/invoices', 'My invoices'], ['/browse-plans', 'Browse plans'], ['/tickets', 'Help']]]],
 }
 
 function Shell() {
@@ -257,14 +275,14 @@ function Shell() {
           <button className="menu-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>Menu</button>
         </div>
         <nav onClick={() => setOpen(false)}>
-          {NAV[user.role].map(([group, links]) => (
+          {NAV[user.department || user.role].map(([group, links]) => (
             <div key={group}>
               <h3>{group}</h3>
               {links.map(([to, text]) => <NavLink key={to} to={to} end={to === '/'}><NavIcon to={to} />{text}</NavLink>)}
             </div>
           ))}
         </nav>
-        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{user.role}</small><span className="who-links"><Link to="/profile">Profile</Link><button className="link" onClick={logout}>Sign out</button></span></div>
+        <div className="who"><span className="avatar" aria-hidden="true">{user.name[0].toUpperCase()}</span><b>{user.name}</b><small>{{ support: 'Customer care', sales: 'Sales' }[user.department] || user.role}</small><span className="who-links"><Link to="/profile">Profile</Link><button className="link" onClick={logout}>Sign out</button></span></div>
       </aside>
       <main className="content"><div className="page-in" key={pathname}><Outlet /></div></main>
     </div>
@@ -278,11 +296,28 @@ function Require({ roles, children }) {
 
 function Home() {
   const { user } = useAuth()
-  return user.role === 'customer' ? <Navigate to="/subscriptions" replace /> : <Dashboard />
+  if (user.role === 'customer') return <Navigate to="/subscriptions" replace />
+  if (user.department === 'sales') return <Navigate to="/sales" replace />
+  if (user.department === 'support') return <Navigate to="/tickets" replace />
+  return <Dashboard />
 }
 
 const TEAM = ['admin', 'staff']
 const team = (element) => <Require roles={TEAM}>{element}</Require>
+const admin = (element) => <Require roles={['admin']}>{element}</Require>
+
+function BackOffice({ children }) {
+  const { user } = useAuth()
+  return user.role === 'customer' || user.department ? <Navigate to="/" replace /> : children
+}
+
+// A signed-in person who lands here, such as by pressing Back, goes to the app and is not shown a sign-in form.
+function PublicOnly({ children }) {
+  const { user } = useAuth()
+  const [params] = useSearchParams()
+  if (user) return <Navigate to={params.get('next') === 'plans' && user.role === 'customer' ? '/browse-plans' : '/'} replace />
+  return children
+}
 
 function Welcome() {
   const { user } = useAuth()
@@ -297,8 +332,8 @@ function App() {
   return (
     <Routes>
       <Route path="/welcome" element={<Welcome />} />
-      <Route path="/login" element={<Login />} />
-      <Route path="/signup" element={<Signup />} />
+      <Route path="/login" element={<PublicOnly><Login /></PublicOnly>} />
+      <Route path="/signup" element={<PublicOnly><Signup /></PublicOnly>} />
       <Route path="/forgot-password" element={<ForgotPassword />} />
       <Route path="/reset-password" element={<ResetPassword />} />
       <Route element={<Shell />}>
@@ -311,9 +346,18 @@ function App() {
         <Route path="subscriptions/:id/edit" element={team(<SubscriptionForm />)} />
         <Route path="invoices" element={<Invoices />} />
         <Route path="invoices/:id" element={<InvoiceDetail />} />
-        <Route path="payments" element={team(<Payments />)} />
-        <Route path="revenue" element={team(<Revenue />)} />
+        <Route path="payments" element={<BackOffice><Payments /></BackOffice>} />
+        <Route path="revenue" element={<BackOffice><Revenue /></BackOffice>} />
         <Route path="customers" element={team(<CrudPage key="customers" config={configs.customers} />)} />
+        <Route path="customers/:id" element={team(<CustomerDetail />)} />
+        <Route path="tickets" element={<Tickets />} />
+        <Route path="tickets/:id" element={<TicketDetail />} />
+        <Route path="team-chat" element={team(<TeamChat />)} />
+        <Route path="sales" element={team(<Sales />)} />
+        <Route path="import" element={<BackOffice><ImportSubscribers /></BackOffice>} />
+        <Route path="payment-approvals" element={admin(<PaymentApprovals />)} />
+        <Route path="promo-codes" element={admin(<CrudPage key="promo" config={configs.promoCodes} />)} />
+        <Route path="sales-targets" element={admin(<CrudPage key="targets" config={configs.salesTargets} />)} />
         <Route path="products" element={team(<CrudPage key="products" config={configs.products} />)} />
         <Route path="plans" element={team(<CrudPage key="plans" config={configs.plans} />)} />
         <Route path="templates" element={team(<CrudPage key="templates" config={configs.templates} />)} />

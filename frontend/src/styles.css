@@ -199,6 +199,28 @@ a.tile:hover { border-color: var(--brand); text-decoration: none; transform: tra
 .bar-stack .bar:first-child { border-radius: 4px 4px 0 0; }
 .bar.later, .swatch.later { background: repeating-linear-gradient(135deg, #c9bdfb 0 3px, #e6e0fd 3px 6px); }
 .bar-slot:hover .bar.later, .bar-slot:focus-visible .bar.later { background: repeating-linear-gradient(135deg, #a892ff 0 3px, #d5ccfc 3px 6px); }
+.fact-note { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.warm-tag { background: var(--warn-bg); color: var(--warn); }
+.assigned { margin: 8px 0 0; font-weight: 600; }
+.thread { display: flex; flex-direction: column; gap: 12px; }
+.bubble { align-self: flex-start; max-width: min(720px, 92%); background: var(--muted-bg); border-radius: 14px; padding: 12px 15px; }
+.bubble.from-team { align-self: flex-end; background: var(--brand-soft); }
+.bubble.internal { background: var(--warn-bg); }
+.bubble header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.bubble header small { color: var(--muted); }
+.bubble p { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.45; }
+.reply-foot { justify-content: space-between !important; align-items: center; flex-wrap: wrap; }
+.chat { max-height: 56vh; overflow-y: auto; }
+.chat-form { display: flex; gap: 8px; padding: 12px; }
+.meter { height: 12px; border-radius: 6px; background: var(--muted-bg); overflow: hidden; margin: 10px 0 8px; }
+.meter i { display: block; height: 100%; border-radius: 6px; background: var(--brand); transition: width .7s cubic-bezier(.2, .8, .2, 1); }
+.chart-head.flat { padding: 0; }
+.target-line { position: absolute; left: 12%; right: 12%; height: 0; border-top: 2px dashed var(--ink-2); z-index: 1; }
+.target-mark { width: 16px; height: 0; border-top: 2px dashed var(--ink-2); }
+.row.end { justify-content: flex-end; flex-wrap: nowrap; }
+.mono { font-family: ui-monospace, Consolas, monospace; font-size: .86rem; white-space: pre; overflow-x: auto; }
+.file-pick { color: var(--brand); font-weight: 600; cursor: pointer; }
+.file-pick input { display: block; margin-top: 6px; font-weight: 400; border: 0; padding: 0; }
 .share th, .share td { padding-inline: 12px; }
 .share td:first-child { white-space: normal; }
 .legend { display: flex; gap: 14px; font-size: .84rem; color: var(--ink-2); }

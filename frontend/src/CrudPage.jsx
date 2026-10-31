@@ -15,7 +15,9 @@ function FormField({ field, value, onChange, error, values, sources }) {
       </label>
     )
   }
-  if (field.type === 'select') {
+  if (field.type === 'select-optional') {
+    input = <select {...common}>{field.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}</select>
+  } else if (field.type === 'select') {
     input = (
       <select {...common}>
         <option value="">Choose</option>
@@ -87,7 +89,7 @@ function RecordForm({ config, record, onClose, onSaved }) {
     const body = {}
     for (const field of config.fields) {
       const value = values[field.name]
-      body[field.name] = value === '' && !['text', 'textarea', undefined].includes(field.type) ? null : value
+      body[field.name] = value === '' && !['text', 'textarea', 'select-optional', undefined].includes(field.type) ? null : value
     }
     try {
       if (record) await api.put(`${config.path}${record.id}/`, body)
@@ -128,11 +130,11 @@ export function CrudPage({ config }) {
   const [search, setSearch] = useState('')
   const [editing, setEditing] = useState(null)
   const debounced = useDebounced(search)
-  const { data, loading, error, reload } = useLoad(`${config.path}${query({ page, search: debounced })}`)
+  const { data, loading, error, reload } = useLoad(`${config.path}${query({ ...config.filter, page, search: debounced })}`)
   const toast = useToast()
 
   const remove = async (row) => {
-    if (!window.confirm(`Delete ${row.name}? This cannot be undone.`)) return
+    if (!window.confirm(`Delete ${row.name || row.salesperson_name}? This cannot be undone.`)) return
     try {
       await api.del(`${config.path}${row.id}/`)
       toast(`${config.singular} deleted.`)

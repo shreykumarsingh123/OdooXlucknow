@@ -16,7 +16,7 @@ from rest_framework.exceptions import ValidationError
 from catalog.models import Discount, PaymentTerm, Plan, money
 from config.api import Conflict
 
-from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionEvent, SubscriptionLine
+from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, PaymentRequest, Subscription, SubscriptionEvent, SubscriptionLine
 from .notify import send_sms
 
 logger = logging.getLogger(__name__)
@@ -131,7 +131,7 @@ def save_subscription(data, rows, instance=None):
 
 
 @transaction.atomic
-def subscription_from_template(template, customer, start_date, expiry_date, payment_term):
+def subscription_from_template(template, customer, start_date, expiry_date, payment_term, salesperson=None):
     rows = [{"product": l.product, "variant": l.variant, "quantity": l.quantity} for l in template.lines.select_related("product", "variant")]
     subscription = save_subscription(
         {
@@ -141,6 +141,7 @@ def subscription_from_template(template, customer, start_date, expiry_date, paym
             "start_date": start_date,
             "expiry_date": expiry_date,
             "quotation_valid_until": timezone.localdate() + timedelta(days=template.validity_days),
+            "salesperson": salesperson,
         },
         rows,
     )
@@ -190,6 +191,24 @@ def activate(subscription_id):
     return sub
 
 
+def _provision(customer, plan, actor, message, bill=True):
+    """Create a running subscription for one plan, with its first invoice ready to pay unless a trial applies."""
+    term = PaymentTerm.objects.filter(is_active=True).first()
+    if term is None:
+        raise Conflict("Add a payment term first.")
+    today = timezone.localdate()
+    sub = Subscription.objects.create(customer=customer, plan=plan, payment_term=term, start_date=today, expiry_date=add_months(today, 12))
+    sub.number = f"SUB-{sub.pk:06d}"
+    sub.save(update_fields=["number"])
+    write_lines(sub, [])
+    _start_billing(sub)
+    log_event(sub.pk, message + (f", free trial until {sub.trial_ends}" if sub.trial_ends else ""), actor)
+    if bill:
+        for invoice in bill_subscription(sub.pk, today):
+            confirm_invoice(invoice.pk)
+    return sub
+
+
 def _start_billing(sub):
     """Go active. A plan's free trial delays the first invoice, once per customer per plan."""
     used_before = Subscription.objects.filter(
@@ -199,8 +218,10 @@ def _start_billing(sub):
     sub.state = S.ACTIVE
     sub.trial_ends = sub.start_date + timedelta(days=trial) if trial else None
     sub.trial_plan = sub.plan if trial else None
+    sub.activated_on = timezone.localdate()
+    sub.term_days = max((sub.expiry_date - sub.start_date).days, 1)
     sub.next_invoice_date = sub.trial_ends or sub.start_date
-    sub.save(update_fields=["state", "trial_ends", "trial_plan", "next_invoice_date", "updated_at"])
+    sub.save(update_fields=["state", "trial_ends", "trial_plan", "activated_on", "term_days", "next_invoice_date", "updated_at"])
 
 
 @transaction.atomic
@@ -213,16 +234,28 @@ def start_plan(user, plan_id):
     type(user).objects.select_for_update().get(pk=user.pk)  # one at a time per customer, so a double click makes one
     if Subscription.objects.filter(customer=user, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
         raise Conflict("You already have this plan.")
-    term = PaymentTerm.objects.filter(is_active=True).first()
-    if term is None:
-        raise Conflict("This plan cannot be started online. Please contact Brightloop.")
-    sub = Subscription.objects.create(customer=user, plan=plan, payment_term=term, start_date=today, expiry_date=add_months(today, 12))
-    sub.number = f"SUB-{sub.pk:06d}"
-    sub.save(update_fields=["number"])
-    write_lines(sub, [])
-    _start_billing(sub)
-    log_event(sub.pk, "Started online" + (f", free trial until {sub.trial_ends}" if sub.trial_ends else ""), user)
-    return sub
+    return _provision(user, plan, user, "Started online")
+
+
+@transaction.atomic
+def assign_plan(customer, plan, actor, replace=None):
+    """The admin puts a customer on any active plan, optionally ending a subscription it replaces."""
+    if not plan.is_active:
+        raise Conflict("That plan is not active.")
+    type(customer).objects.select_for_update().get(pk=customer.pk)
+    if replace:
+        old = Subscription.objects.select_for_update().filter(pk=replace, customer=customer, state__in=[S.ACTIVE, S.PAUSED]).first()
+        if old is None:
+            raise ValidationError({"replace": ["Choose one of this customer's running subscriptions."]})
+        old.state = S.CLOSED
+        old.closed_at = timezone.localdate()
+        old.close_reason = Subscription.CloseReason.OTHER
+        old.close_note = f"Replaced by the {plan.name} plan"
+        old.save(update_fields=["state", "closed_at", "close_reason", "close_note", "updated_at"])
+        log_event(old.pk, f"Closed by the admin: replaced by the {plan.name} plan", actor)
+    if Subscription.objects.filter(customer=customer, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
+        raise Conflict("This customer already has that plan.")
+    return _provision(customer, plan, actor, "Plan assigned by the admin")
 
 
 @transaction.atomic
@@ -271,11 +304,43 @@ def renew(subscription_id):
     _require(sub, S.ACTIVE)
     if not sub.plan.renewable:
         raise Conflict("This plan cannot be renewed.")
-    # Extends by the original term (assumption A-07).
-    term = max(sub.expiry_date - sub.start_date, timedelta(days=1))
-    sub.expiry_date += term
-    sub.save(update_fields=["expiry_date", "updated_at"])
+    _extend(sub)
     return sub
+
+
+def _extend(sub):
+    # Extends by the original term (assumption A-07).
+    sub.expiry_date += timedelta(days=sub.term_days or max((sub.expiry_date - sub.start_date).days, 1))
+    sub.save(update_fields=["expiry_date", "updated_at"])
+
+
+@transaction.atomic
+def set_auto_renew(subscription_id, enabled, actor=None):
+    sub = _locked(subscription_id)
+    _require(sub, S.ACTIVE, S.PAUSED)
+    if not sub.plan.renewable or sub.plan.auto_close:
+        raise Conflict("This plan does not renew.")
+    sub.auto_renew = enabled is True
+    sub.save(update_fields=["auto_renew", "updated_at"])
+    log_event(sub.pk, "Automatic renewal turned on" if sub.auto_renew else f"Automatic renewal turned off, ends on {sub.expiry_date}", actor)
+    return sub
+
+
+def renew_due(today=None):
+    """Subscriptions past expiry roll over by themselves, unless the customer opted out."""
+    today = today or timezone.localdate()
+    due = Subscription.objects.filter(state=S.ACTIVE, auto_renew=True, plan__renewable=True, plan__auto_close=False, expiry_date__lt=today)
+    renewed = 0
+    for pk in list(due.values_list("pk", flat=True)):
+        with transaction.atomic():
+            sub = _locked(pk)
+            if sub.state != S.ACTIVE or not sub.auto_renew:
+                continue
+            while sub.expiry_date < today:
+                _extend(sub)
+            log_event(sub.pk, f"Renewed automatically until {sub.expiry_date}")
+            renewed += 1
+    return renewed
 
 
 @transaction.atomic
@@ -402,15 +467,34 @@ def redeem_code(subscription_id, code, actor=None):
     if discount.subscriptions.filter(pk=sub.pk).exists():
         raise Conflict("This code is already on this subscription.")
     discount.subscriptions.add(sub)
-    log_event(sub.pk, f"Code {discount.code} added: {discount.name}", actor)
+    reward = discount.reward
+    if reward == Discount.Reward.CREDIT:
+        sub.credit_balance += discount.value
+        sub.save(update_fields=["credit_balance", "updated_at"])
+        message = f"{discount.value} added to the account"
+    elif reward == Discount.Reward.FREE_DAYS:
+        # Moves the billing day too, so that every later period stays a full one.
+        sub.next_invoice_date = max(sub.next_invoice_date or timezone.localdate(), timezone.localdate()) + timedelta(days=int(discount.value))
+        sub.trial_ends = sub.next_invoice_date
+        sub.save(update_fields=["next_invoice_date", "trial_ends", "updated_at"])
+        message = f"{int(discount.value)} free days, next invoice on {sub.next_invoice_date}"
+    elif reward == Discount.Reward.PERK:
+        message = f"Perk: {discount.perk_text}"
+    else:
+        message = discount.name
+    if reward != Discount.Reward.DISCOUNT:
+        # A discount counts each invoice it lands on. These are used up once, here.
+        discount.times_used += 1
+        discount.save(update_fields=["times_used"])
+    log_event(sub.pk, f"Code {discount.code} used: {message}", actor)
     return sub
 
 
 def close_ended(today=None):
     """Close subscriptions whose plan closes on its own, once they have ended."""
     today = today or timezone.localdate()
-    ended = Subscription.objects.filter(state__in=[S.ACTIVE, S.PAUSED], plan__auto_close=True).filter(
-        Q(expiry_date__lt=today) | Q(plan__end_date__lt=today)
+    ended = Subscription.objects.filter(state__in=[S.ACTIVE, S.PAUSED]).filter(
+        Q(plan__auto_close=True, expiry_date__lt=today) | Q(plan__auto_close=True, plan__end_date__lt=today) | Q(auto_renew=False, expiry_date__lt=today)
     )
     ids = list(ended.values_list("pk", flat=True))
     SubscriptionEvent.objects.bulk_create(SubscriptionEvent(subscription_id=pk, message="Closed on its own at the end of its term") for pk in ids)
@@ -425,7 +509,7 @@ def _qualifies(discount, purchase, quantity):
 
 
 def _applicable_discounts(sub, day):
-    live = Discount.objects.select_for_update().filter(is_active=True, start_date__lte=day).filter(
+    live = Discount.objects.select_for_update().filter(reward=Discount.Reward.DISCOUNT, is_active=True, start_date__lte=day).filter(
         Q(end_date__isnull=True) | Q(end_date__gte=day)
     ).filter(Q(usage_limit__isnull=True) | Q(times_used__lt=F("usage_limit")))
     product_ids = [line.product_id for line in sub.lines.all() if line.product_id]
@@ -564,7 +648,7 @@ def bill_subscription(subscription_id, today=None):
 def run_billing(today=None):
     """Bill everything due. Each subscription has its own transaction, so one failure cannot block the rest."""
     today = today or timezone.localdate()
-    closed = close_ended(today)
+    renewed = renew_due(today)
     due = Subscription.objects.filter(state=S.ACTIVE, next_invoice_date__lte=today).values_list("pk", flat=True)
     created, failed = 0, []
     for pk in list(due):
@@ -575,7 +659,9 @@ def run_billing(today=None):
         except Exception as exc:
             logger.exception("Billing failed for subscription %s", pk)
             failed.append({"subscription": pk, "error": str(exc)})
-    return {"invoices_created": created, "subscriptions_closed": closed, "failed": failed}
+    # Closed last, so that a subscription's final periods are billed first and nothing is skipped.
+    closed = close_ended(today)
+    return {"invoices_created": created, "subscriptions_closed": closed, "subscriptions_renewed": renewed, "failed": failed}
 
 
 def _locked_invoice(invoice_id):
@@ -649,6 +735,36 @@ def record_payment(invoice_id, method, amount, date, note, user, reference=None)
         invoice.state = I.PAID
     invoice.save(update_fields=["amount_paid", "state"])
     return payment
+
+
+# ---------------------------------------------------------------- payments approved by the admin
+
+
+@transaction.atomic
+def request_payment(invoice_id, customer, method, amount, reference):
+    invoice = _locked_invoice(invoice_id)
+    if invoice.state != I.CONFIRMED:
+        raise Conflict("Only confirmed invoices can be paid.")
+    if amount > invoice.amount_due:
+        raise ValidationError({"amount": [f"This is more than the {invoice.amount_due} still due."]})
+    if invoice.payment_requests.filter(status=PaymentRequest.Status.PENDING).exists():
+        raise Conflict("A payment on this invoice is already waiting for approval.")
+    return PaymentRequest.objects.create(invoice=invoice, customer=customer, method=method, amount=amount, reference=reference)
+
+
+@transaction.atomic
+def decide_payment(request_id, approve, note, actor):
+    row = PaymentRequest.objects.select_for_update().select_related("invoice").get(pk=request_id)
+    if row.status != PaymentRequest.Status.PENDING:
+        raise Conflict("This request has already been decided.")
+    if approve:
+        record_payment(row.invoice_id, row.method, row.amount, timezone.localdate(), f"Approved request. {row.reference}".strip()[:255], actor)
+    row.status = PaymentRequest.Status.APPROVED if approve else PaymentRequest.Status.REJECTED
+    row.decided_by = actor
+    row.decided_at = timezone.now()
+    row.decision_note = str(note)[:255]
+    row.save(update_fields=["status", "decided_by", "decided_at", "decision_note"])
+    return row
 
 
 # ---------------------------------------------------------------- online payment (Stripe Checkout)

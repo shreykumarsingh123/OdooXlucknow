@@ -28,9 +28,15 @@ class User(AbstractUser):
         STAFF = "staff", "Staff"
         CUSTOMER = "customer", "Customer"
 
+    class Department(models.TextChoices):
+        SUPPORT = "support", "Customer care"
+        SALES = "sales", "Sales"
+
     username = None
     email = models.EmailField(unique=True)
     role = models.CharField(max_length=10, choices=Role.choices, default=Role.CUSTOMER, db_index=True)
+    # Narrows what a staff member sees. Empty means general staff.
+    department = models.CharField(max_length=10, choices=Department.choices, blank=True)
     company = models.CharField(max_length=150, blank=True)
     phone = models.CharField(max_length=30, blank=True)
     address = models.TextField(blank=True)
@@ -51,6 +57,18 @@ class User(AbstractUser):
     @property
     def is_team(self):
         return self.role in (self.Role.ADMIN, self.Role.STAFF)
+
+    @property
+    def is_sales(self):
+        return self.role == self.Role.STAFF and self.department == self.Department.SALES
+
+    @property
+    def is_support(self):
+        return self.role == self.Role.STAFF and self.department == self.Department.SUPPORT
+
+    @property
+    def is_back_office(self):
+        return self.is_admin or (self.role == self.Role.STAFF and not self.department)
 
     @property
     def display_name(self):

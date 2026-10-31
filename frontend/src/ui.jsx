@@ -7,7 +7,10 @@ export const label = (text) => String(text || '').replace(/_/g, ' ').replace(/^.
 
 const TONES = {
   active: 'good', paid: 'good', confirmed: 'info', quotation: 'info', draft: 'muted',
-  paused: 'warn', closed: 'muted', cancelled: 'muted', overdue: 'bad',
+  paused: 'warn', closed: 'muted', cancelled: 'muted', overdue: 'bad', inactive: 'muted',
+  open: 'warn', in_progress: 'info', resolved: 'good', high: 'bad', normal: 'muted', low: 'muted',
+  no_active_plan: 'muted', current: 'good', scheduled: 'muted', pending: 'warn', approved: 'good', rejected: 'bad',
+  new: 'info', imported: 'good', skipped: 'muted',
 }
 export function Badge({ value }) {
   return <span className={`badge ${TONES[value] || 'muted'}`}>{label(value)}</span>
@@ -87,7 +90,7 @@ export function useLoad(path) {
 }
 
 export function useOptions(path) {
-  const { data } = useLoad(path ? `${path}?page_size=200` : '/health/')
+  const { data } = useLoad(path ? `${path}${path.includes('?') ? '&' : '?'}page_size=200` : '/health/')
   return path ? data?.results || [] : []
 }
 

@@ -1,3 +1,4 @@
+from django_filters import rest_framework as filters
 from rest_framework import viewsets
 
 from accounts.permissions import AdminWriteTeamRead
@@ -41,10 +42,20 @@ class PlanViewSet(CatalogViewSet):
     filterset_fields = ["is_active", "billing_period"]
 
 
+class DiscountFilter(filters.FilterSet):
+    has_code = filters.BooleanFilter(field_name="code", lookup_expr="isnull", exclude=True)
+
+    class Meta:
+        model = Discount
+        fields = ["is_active", "kind", "scope", "reward"]
+
+
 class DiscountViewSet(CatalogViewSet):
     queryset = Discount.objects.prefetch_related("products", "subscriptions")
     serializer_class = DiscountSerializer
-    filterset_fields = ["is_active", "kind", "scope"]
+    filterset_class = DiscountFilter
+    filterset_fields = None
+    search_fields = ["name", "code"]
 
 
 class QuotationTemplateViewSet(CatalogViewSet):

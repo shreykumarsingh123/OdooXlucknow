@@ -6,7 +6,17 @@ from rest_framework import serializers
 from accounts.models import User
 from catalog.models import PaymentTerm, Product, ProductVariant, QuotationTemplate, Tax
 
-from .models import Invoice, InvoiceDiscount, InvoiceLine, Payment, Subscription, SubscriptionEvent, SubscriptionLine
+from .models import (
+    Invoice,
+    InvoiceDiscount,
+    InvoiceLine,
+    Payment,
+    PaymentRequest,
+    SalesTarget,
+    Subscription,
+    SubscriptionEvent,
+    SubscriptionLine,
+)
 
 S = Subscription.State
 I = Invoice.State
@@ -27,12 +37,14 @@ def subscription_actions(sub, user):
             actions.append("change_plan")
         if plan.pausable:
             actions.append("pause")
-        if plan.renewable:
+        if plan.renewable and user.is_team:
             actions.append("renew")
     if sub.state == S.PAUSED:
         actions.append("resume")
     if sub.state in (S.ACTIVE, S.PAUSED):
         actions.append("redeem")
+        if plan.renewable and not plan.auto_close:
+            actions.append("auto_renew")
         if user.is_admin:
             actions.append("adjust")
         if plan.closable:
@@ -42,17 +54,21 @@ def subscription_actions(sub, user):
 
 def invoice_actions(invoice, user):
     actions = ["print"]
+    if user.is_sales:
+        return actions
     if user.is_team:
         if invoice.state == I.DRAFT:
             actions.append("confirm")
         if invoice.state in (I.CONFIRMED, I.PAID):
             actions.append("send")
-        if invoice.state == I.CONFIRMED:
+        if invoice.state == I.CONFIRMED and user.is_back_office:
             actions.append("pay")
         if invoice.state in (I.DRAFT, I.CONFIRMED) and invoice.amount_paid == 0:
             actions.append("cancel")
-    elif invoice.state == I.CONFIRMED and settings.STRIPE_SECRET_KEY:
-        actions.append("pay_online")
+    elif invoice.state == I.CONFIRMED:
+        actions.append("request_payment")
+        if settings.STRIPE_SECRET_KEY:
+            actions.append("pay_online")
     return actions
 
 
@@ -117,7 +133,9 @@ class SubscriptionDetailSerializer(serializers.ModelSerializer):
     payment_term_name = serializers.CharField(source="payment_term.name", read_only=True)
     lines = LineOutSerializer(many=True, read_only=True)
     allowed_actions = serializers.SerializerMethodField()
-    promotions = serializers.SlugRelatedField(source="discounts", slug_field="name", many=True, read_only=True)
+    promotions = serializers.SerializerMethodField()
+    salesperson_name = serializers.SerializerMethodField()
+    renews = serializers.SerializerMethodField()
     events = serializers.SerializerMethodField()
 
     class Meta:
@@ -126,10 +144,20 @@ class SubscriptionDetailSerializer(serializers.ModelSerializer):
             "id", "number", "customer", "customer_name", "plan", "plan_name", "billing_period", "payment_term",
             "payment_term_name", "start_date", "expiry_date", "state", "quotation_valid_until", "next_invoice_date",
             "recurring_total", "closed_at", "close_reason", "trial_ends", "credit_balance", "promotions", "events", "lines", "allowed_actions",
+            "auto_renew", "renews", "salesperson", "salesperson_name",
         ]
 
     def get_allowed_actions(self, sub):
         return subscription_actions(sub, self.context["request"].user)
+
+    def get_promotions(self, sub):
+        return [d.perk_text or d.name for d in sub.discounts.all()]
+
+    def get_salesperson_name(self, sub):
+        return sub.salesperson.display_name if sub.salesperson else None
+
+    def get_renews(self, sub):
+        return sub.auto_renew and sub.plan.renewable and not sub.plan.auto_close
 
     def get_events(self, sub):
         return EventSerializer(sub.events.select_related("actor")[:30], many=True).data
@@ -144,10 +172,13 @@ class AdjustSerializer(serializers.Serializer):
 class SubscriptionWriteSerializer(serializers.ModelSerializer):
     customer = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(role=User.Role.CUSTOMER, is_active=True))
     lines = LineInSerializer(many=True, required=False)
+    salesperson = serializers.PrimaryKeyRelatedField(
+        queryset=User.objects.filter(role=User.Role.STAFF, department=User.Department.SALES, is_active=True), required=False, allow_null=True
+    )
 
     class Meta:
         model = Subscription
-        fields = ["customer", "plan", "payment_term", "start_date", "expiry_date", "lines"]
+        fields = ["customer", "plan", "payment_term", "start_date", "expiry_date", "salesperson", "lines"]
 
 
 class FromTemplateSerializer(serializers.Serializer):
@@ -202,12 +233,59 @@ class InvoiceDetailSerializer(InvoiceListSerializer):
     discounts = InvoiceDiscountSerializer(many=True, read_only=True)
     payments = PaymentSerializer(many=True, read_only=True)
     allowed_actions = serializers.SerializerMethodField()
+    pending_request = serializers.SerializerMethodField()
 
     class Meta(InvoiceListSerializer.Meta):
         fields = InvoiceListSerializer.Meta.fields + [
             "reminder_count", "last_reminder_at", "customer_email", "customer_address", "period_start", "period_end", "subtotal", "discount_total", "tax_total", "credit_applied", "is_adjustment",
-            "lines", "discounts", "payments", "allowed_actions",
+            "lines", "discounts", "payments", "allowed_actions", "pending_request",
         ]
+
+    def get_pending_request(self, invoice):
+        row = invoice.payment_requests.filter(status=PaymentRequest.Status.PENDING).first()
+        return {"method": row.get_method_display(), "amount": row.amount, "reference": row.reference} if row else None
 
     def get_allowed_actions(self, invoice):
         return invoice_actions(invoice, self.context["request"].user)
+
+
+class PaymentRequestInSerializer(serializers.Serializer):
+    method = serializers.ChoiceField(choices=[c for c in Payment.Method.choices if c[0] != Payment.Method.ONLINE])
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0.01"))
+    reference = serializers.CharField(max_length=255, required=False, allow_blank=True)
+
+
+class PaymentRequestSerializer(serializers.ModelSerializer):
+    invoice_number = serializers.CharField(source="invoice.number", read_only=True)
+    customer_name = serializers.CharField(source="customer.display_name", read_only=True)
+    method_label = serializers.CharField(source="get_method_display", read_only=True)
+    amount_due = serializers.DecimalField(source="invoice.amount_due", max_digits=14, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = PaymentRequest
+        fields = [
+            "id", "invoice", "invoice_number", "customer_name", "method", "method_label", "amount", "amount_due", "reference", "status",
+            "decision_note", "decided_at", "created_at",
+        ]
+
+
+class SalesTargetSerializer(serializers.ModelSerializer):
+    salesperson = serializers.PrimaryKeyRelatedField(queryset=User.objects.filter(role=User.Role.STAFF, department=User.Department.SALES))
+    salesperson_name = serializers.CharField(source="salesperson.display_name", read_only=True)
+    amount = serializers.DecimalField(max_digits=14, decimal_places=2, min_value=Decimal("0"))
+
+    class Meta:
+        model = SalesTarget
+        fields = ["id", "salesperson", "salesperson_name", "month", "amount"]
+        validators = []
+
+    def validate(self, attrs):
+        month = attrs.get("month", getattr(self.instance, "month", None))
+        attrs["month"] = month.replace(day=1)
+        person = attrs.get("salesperson", getattr(self.instance, "salesperson", None))
+        clash = SalesTarget.objects.filter(salesperson=person, month=attrs["month"])
+        if self.instance:
+            clash = clash.exclude(pk=self.instance.pk)
+        if clash.exists():
+            raise serializers.ValidationError({"month": ["This person already has a target for that month."]})
+        return attrs

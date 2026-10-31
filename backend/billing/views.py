@@ -13,23 +13,27 @@ from django.utils.dateparse import parse_date
 from django_filters import rest_framework as filters
 from rest_framework import mixins, serializers, viewsets
 from rest_framework.decorators import action, api_view, authentication_classes, permission_classes
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import NotFound, PermissionDenied
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
-from accounts.permissions import IsTeam
+from accounts.models import User
+from accounts.permissions import IsAdmin, IsBackOffice, IsTeam
 from catalog.models import Plan, money
 from config.api import Conflict
 
-from . import revenue, services
-from .models import Invoice, Payment, Subscription
+from . import imports, revenue, services
+from .models import Invoice, Payment, PaymentRequest, SalesTarget, Subscription
 from .serializers import (
     AdjustSerializer,
     FromTemplateSerializer,
     InvoiceDetailSerializer,
     InvoiceListSerializer,
+    PaymentRequestInSerializer,
+    PaymentRequestSerializer,
     PaymentSerializer,
+    SalesTargetSerializer,
     SubscriptionDetailSerializer,
     SubscriptionListSerializer,
     SubscriptionWriteSerializer,
@@ -63,7 +67,9 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         if self.action != "list":
             qs = qs.prefetch_related("lines__taxes", "lines__product")
         user = self.request.user
-        if not user.is_team:
+        if user.is_sales:
+            qs = qs.filter(salesperson=user)
+        elif not user.is_team:
             qs = qs.filter(customer=user).exclude(state=S.DRAFT)
         return qs
 
@@ -84,6 +90,8 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         write.is_valid(raise_exception=True)
         data = dict(write.validated_data)
         rows = data.pop("lines", [])
+        if request.user.is_sales:
+            data["salesperson"] = request.user
         return self._render(services.save_subscription(data, rows).pk, 201)
 
     def update(self, request, *args, **kwargs):
@@ -93,6 +101,8 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         write.is_valid(raise_exception=True)
         data = dict(write.validated_data)
         rows = data.pop("lines", None)
+        if request.user.is_sales:
+            data.pop("salesperson", None)
         return self._render(services.save_subscription(data, rows, instance).pk)
 
     def destroy(self, request, *args, **kwargs):
@@ -108,7 +118,8 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         self._team_only()
         form = FromTemplateSerializer(data=request.data)
         form.is_valid(raise_exception=True)
-        return self._render(services.subscription_from_template(**form.validated_data).pk, 201)
+        salesperson = request.user if request.user.is_sales else None
+        return self._render(services.subscription_from_template(**form.validated_data, salesperson=salesperson).pk, 201)
 
     def _team_transition(self, func, message):
         self._team_only()
@@ -186,7 +197,14 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=["post"])
     def renew(self, request, pk=None):
-        return self._owner_transition(services.renew, "Renewed")
+        return self._team_transition(services.renew, "Renewed by the team")
+
+    # Opting out takes effect at expiry, so even a fixed-term plan can turn it off.
+    @action(detail=True, methods=["post"])
+    def auto_renew(self, request, pk=None):
+        sub = self.get_object()
+        services.set_auto_renew(sub.pk, request.data.get("enabled"), request.user)
+        return self._render(sub.pk)
 
     @action(detail=True, methods=["post"])
     def toggle_addon(self, request, pk=None):
@@ -197,6 +215,8 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def generate_invoice(self, request, pk=None):
         self._team_only()
+        if request.user.is_sales:
+            raise PermissionDenied("Only the billing team can do this.")
         created = services.bill_subscription(self.get_object().pk)
         return Response({"invoices_created": len(created), "invoices": [i.pk for i in created]})
 
@@ -230,7 +250,9 @@ class InvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         if self.action != "list":
             qs = qs.prefetch_related("lines", "discounts", "payments__invoice")
         user = self.request.user
-        if not user.is_team:
+        if user.is_sales:
+            qs = qs.filter(subscription__salesperson=user)
+        elif not user.is_team:
             qs = qs.filter(customer=user).exclude(state=I.DRAFT)
         return qs
 
@@ -241,7 +263,7 @@ class InvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         return {**super().get_serializer_context(), "today": timezone.localdate()}
 
     def _team_action(self, func, **kwargs):
-        if not self.request.user.is_team:
+        if not self.request.user.is_team or self.request.user.is_sales:
             raise PermissionDenied("Only the Brightloop team can do this.")
         func(self.get_object().pk, **kwargs)
         invoice = self.get_queryset().get(pk=self.kwargs["pk"])
@@ -271,11 +293,23 @@ class InvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         fresh = self.get_queryset().get(pk=invoice.pk)
         return Response(InvoiceDetailSerializer(fresh, context=self.get_serializer_context()).data)
 
+    @action(detail=True, methods=["post"])
+    def request_payment(self, request, pk=None):
+        invoice = self.get_object()
+        if request.user.is_team:
+            raise PermissionDenied("Record the payment on the invoice instead.")
+        form = PaymentRequestInSerializer(data=request.data)
+        form.is_valid(raise_exception=True)
+        data = form.validated_data
+        services.request_payment(invoice.pk, request.user, data["method"], data["amount"], data.get("reference", ""))
+        fresh = self.get_queryset().get(pk=invoice.pk)
+        return Response(InvoiceDetailSerializer(fresh, context=self.get_serializer_context()).data, status=201)
+
     @action(detail=True, methods=["get"], permission_classes=[IsTeam])
     def recognition(self, request, pk=None):
         return Response(revenue.invoice_schedule(self.get_object()))
 
-    @action(detail=False, methods=["post"], permission_classes=[IsTeam])
+    @action(detail=False, methods=["post"], permission_classes=[IsBackOffice])
     def bulk(self, request):
         kind = request.data.get("action")
         func = {"confirm": services.confirm_invoice, "send": services.send_invoice}.get(kind)
@@ -303,8 +337,34 @@ class PaymentFilter(filters.FilterSet):
         fields = ["method", "invoice"]
 
 
+class PaymentRequestViewSet(mixins.ListModelMixin, viewsets.GenericViewSet):
+    permission_classes = [IsAdmin]
+    queryset = PaymentRequest.objects.select_related("invoice", "customer")
+    serializer_class = PaymentRequestSerializer
+    filterset_fields = ["status"]
+
+    def _decide(self, request, approve):
+        row = services.decide_payment(self.get_object().pk, approve, request.data.get("note", ""), request.user)
+        return Response(self.get_serializer(self.get_queryset().get(pk=row.pk)).data)
+
+    @action(detail=True, methods=["post"])
+    def approve(self, request, pk=None):
+        return self._decide(request, True)
+
+    @action(detail=True, methods=["post"])
+    def reject(self, request, pk=None):
+        return self._decide(request, False)
+
+
+class SalesTargetViewSet(viewsets.ModelViewSet):
+    permission_classes = [IsAdmin]
+    queryset = SalesTarget.objects.select_related("salesperson")
+    serializer_class = SalesTargetSerializer
+    filterset_fields = ["salesperson", "month"]
+
+
 class PaymentViewSet(mixins.ListModelMixin, mixins.CreateModelMixin, mixins.RetrieveModelMixin, viewsets.GenericViewSet):
-    permission_classes = [IsTeam]
+    permission_classes = [IsBackOffice]
     queryset = Payment.objects.select_related("invoice")
     serializer_class = PaymentSerializer
     filterset_class = PaymentFilter
@@ -337,13 +397,13 @@ def public_plans(request):
 
 
 @api_view(["POST"])
-@permission_classes([IsTeam])
+@permission_classes([IsBackOffice])
 def billing_run(request):
     return Response(services.run_billing())
 
 
 @api_view(["POST"])
-@permission_classes([IsTeam])
+@permission_classes([IsBackOffice])
 def send_reminders(request):
     return Response(services.send_reminders())
 
@@ -389,7 +449,7 @@ def _date_param(request, name):
 
 
 @api_view(["GET"])
-@permission_classes([IsTeam])
+@permission_classes([IsBackOffice])
 def report_summary(request):
     today = timezone.localdate()
     start, end = _date_param(request, "from"), _date_param(request, "to")
@@ -471,6 +531,7 @@ def report_summary(request):
         "overdue_count": overdue["count"],
         "overdue_amount": overdue["amount"] or 0,
         "drafts_to_confirm": Invoice.objects.filter(state=I.DRAFT).count(),
+        "payment_requests_pending": PaymentRequest.objects.filter(status=PaymentRequest.Status.PENDING).count(),
         "due_for_billing": Subscription.objects.filter(state=S.ACTIVE, next_invoice_date__lte=today).count(),
         "payments_by_method": [
             {"method": Payment.Method(r["method"]).label, "amount": r["amount"], "count": r["count"]} for r in by_method
@@ -502,7 +563,7 @@ def _revenue_params(request):
 
 
 @api_view(["GET"])
-@permission_classes([IsTeam])
+@permission_classes([IsBackOffice])
 def revenue_summary(request):
     return Response(revenue.revenue_report(**_revenue_params(request)))
 
@@ -538,7 +599,7 @@ EXPORTS = {
 
 
 @api_view(["GET"])
-@permission_classes([IsTeam])
+@permission_classes([IsBackOffice])
 def report_export(request, kind):
     if kind == "revenue":
         history = revenue.revenue_report(**_revenue_params(request))["history"]
@@ -567,3 +628,139 @@ def report_export(request, kind):
     response = StreamingHttpResponse(stream(), content_type="text/csv")
     response["Content-Disposition"] = f'attachment; filename="brightloop-{kind}.csv"'
     return response
+
+
+def _monthly_value():
+    return Sum(
+        Case(
+            *[When(plan__billing_period=p, then=F("recurring_total") * Value(f)) for p, f in MONTHLY_FACTOR.items()],
+            output_field=DecimalField(max_digits=16, decimal_places=2),
+        )
+    )
+
+
+def _sales_figures(person, today):
+    """New monthly recurring revenue sold this month and in earlier months, against the admin's targets."""
+    month = today.replace(day=1)
+    sold = Subscription.objects.filter(salesperson=person).exclude(activated_on=None)
+    months = [revenue.month_start(month - timedelta(days=30 * back)) for back in range(5, -1, -1)]
+    by_month = {
+        row["m"].replace(day=1): row
+        for row in sold.filter(activated_on__gte=months[0]).order_by().annotate(m=TruncMonth("activated_on")).values("m").annotate(value=_monthly_value(), count=Count("id"))
+    }
+    targets = dict(SalesTarget.objects.filter(salesperson=person, month__gte=months[0]).values_list("month", "amount"))
+    target = targets.get(month, Decimal("0"))
+    current = by_month.get(month, {})
+    value = current.get("value") or Decimal("0")
+    won = sold.count()
+    quotes = Subscription.objects.filter(salesperson=person, state__in=[S.QUOTATION, S.CONFIRMED]).count()
+    return {
+        "id": person.pk,
+        "name": person.display_name,
+        "target": target,
+        "sold": money(value),
+        "progress": round(100 * value / target, 1) if target else None,
+        "new_subscriptions": current.get("count", 0),
+        "active": sold.filter(state=S.ACTIVE).count(),
+        "lost": sold.filter(state=S.CLOSED).count(),
+        "open_quotes": quotes,
+        "total_won": won,
+        "conversion": round(100 * won / (won + quotes), 1) if won + quotes else None,
+        "active_value": money(sold.filter(state=S.ACTIVE).aggregate(v=_monthly_value())["v"] or 0),
+        "history": [
+            {"month": m.isoformat(), "sold": money((by_month.get(m) or {}).get("value") or 0), "target": targets.get(m, Decimal("0"))}
+            for m in months
+        ],
+    }
+
+
+@api_view(["GET"])
+@permission_classes([IsTeam])
+def sales_report(request):
+    user = request.user
+    today = timezone.localdate()
+    if user.is_support:
+        raise PermissionDenied("Sales figures are for the sales team and the back office.")
+    if user.is_sales:
+        person = user
+    elif request.query_params.get("salesperson"):
+        person = User.objects.filter(pk=request.query_params["salesperson"] if request.query_params["salesperson"].isdigit() else None, role=User.Role.STAFF, department=User.Department.SALES).first()
+        if person is None:
+            raise serializers.ValidationError({"salesperson": ["Choose a salesperson."]})
+    else:
+        team = User.objects.filter(role=User.Role.STAFF, department=User.Department.SALES, is_active=True)
+        return Response({"team": [_sales_figures(person, today) for person in team]})
+    sold = Subscription.objects.filter(salesperson=person).select_related("customer", "plan").order_by("-activated_on", "-id")[:100]
+    return Response({
+        **_sales_figures(person, today),
+        "customers": [
+            {
+                "id": s.pk, "number": s.number, "customer_name": s.customer.display_name, "plan_name": s.plan.name, "state": s.state,
+                "activated_on": s.activated_on, "recurring_total": s.recurring_total, "billing_period": s.plan.billing_period,
+            }
+            for s in sold
+        ],
+    })
+
+
+@api_view(["GET"])
+@permission_classes([IsTeam])
+def customer_overview(request, pk):
+    if request.user.is_sales:
+        raise PermissionDenied("Open the customer from your sales page.")
+    customer = User.objects.filter(pk=pk, role=User.Role.CUSTOMER).first()
+    if customer is None:
+        raise NotFound()
+    subs = Subscription.objects.filter(customer=customer).select_related("plan").order_by("-id")
+    invoices = Invoice.objects.filter(customer=customer).exclude(state__in=[I.DRAFT, I.CANCELLED])
+    totals = invoices.aggregate(billed=Sum("total"), paid=Sum("amount_paid"))
+    overdue = invoices.filter(state=I.CONFIRMED, due_date__lt=timezone.localdate()).count()
+    running = [s for s in subs if s.state in (S.ACTIVE, S.PAUSED)]
+    return Response({
+        "id": customer.pk, "name": customer.display_name, "email": customer.email, "company": customer.company,
+        "phone": customer.phone, "address": customer.address, "is_active": customer.is_active, "joined": customer.date_joined,
+        "status": "active" if running else "no_active_plan",
+        "billed": totals["billed"] or 0, "paid": totals["paid"] or 0, "owed": (totals["billed"] or 0) - (totals["paid"] or 0),
+        "overdue_invoices": overdue,
+        "credit": sum((s.credit_balance for s in subs), Decimal("0")),
+        "subscriptions": [
+            {
+                "id": s.pk, "number": s.number, "plan_name": s.plan.name, "billing_period": s.plan.billing_period, "state": s.state,
+                "expiry_date": s.expiry_date, "recurring_total": s.recurring_total, "trial_ends": s.trial_ends, "auto_renew": s.auto_renew,
+            }
+            for s in subs
+        ],
+        "open_tickets": list(customer.tickets.exclude(status="resolved").values("id", "number", "subject", "status")[:20]),
+    })
+
+
+@api_view(["POST"])
+@permission_classes([IsAdmin])
+def assign_plan(request, pk):
+    customer = User.objects.filter(pk=pk, role=User.Role.CUSTOMER).first()
+    if customer is None:
+        raise NotFound()
+    raw = str(request.data.get("plan", ""))
+    plan = Plan.objects.filter(pk=raw).first() if raw.isdigit() else None
+    if plan is None:
+        raise serializers.ValidationError({"plan": ["Choose a plan."]})
+    replace = str(request.data.get("replace") or "")
+    if replace and not replace.isdigit():
+        raise serializers.ValidationError({"replace": ["Choose a subscription."]})
+    sub = services.assign_plan(customer, plan, request.user, replace or None)
+    return Response({"id": sub.pk, "number": sub.number}, status=201)
+
+
+@api_view(["GET"])
+@permission_classes([IsBackOffice])
+def import_sample(request):
+    return Response({"csv": imports.sample_csv(), "columns": imports.COLUMNS})
+
+
+@api_view(["POST"])
+@permission_classes([IsBackOffice])
+def import_subscribers(request):
+    result = imports.run_import(request.data.get("csv", ""), request.data.get("commit") is True, request.user)
+    if "error" in result:
+        raise serializers.ValidationError({"csv": [result["error"]]})
+    return Response(result)

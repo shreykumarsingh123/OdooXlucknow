@@ -34,6 +34,11 @@ class Subscription(models.Model):
     closed_at = models.DateField(null=True, blank=True)
     close_reason = models.CharField(max_length=20, choices=CloseReason.choices, blank=True)
     close_note = models.CharField(max_length=255, blank=True)
+    # Renews at expiry unless the customer opts out, and then it ends at expiry.
+    auto_renew = models.BooleanField(default=True)
+    term_days = models.PositiveIntegerField(null=True, blank=True)
+    activated_on = models.DateField(null=True, blank=True)
+    salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="sold_subscriptions")
     trial_ends = models.DateField(null=True, blank=True)
     # The plan the free trial was given on. Kept after a plan change, so that trial cannot be taken again.
     trial_plan = models.ForeignKey(Plan, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
@@ -48,6 +53,7 @@ class Subscription(models.Model):
             models.Index(fields=["state", "next_invoice_date"]),
             models.Index(fields=["state", "expiry_date"]),
             models.Index(fields=["customer", "state"]),
+            models.Index(fields=["salesperson", "activated_on"]),
         ]
         constraints = [
             models.CheckConstraint(condition=models.Q(expiry_date__gte=models.F("start_date")), name="sub_dates_ordered")
@@ -189,3 +195,36 @@ class Payment(models.Model):
         ordering = ["-date", "-id"]
         indexes = [models.Index(fields=["date", "method"])]
         constraints = [models.CheckConstraint(condition=models.Q(amount__gt=0), name="payment_positive")]
+
+
+class PaymentRequest(models.Model):
+    """A customer says they paid outside Stripe. The admin approves it, and only then is a payment recorded."""
+
+    class Status(models.TextChoices):
+        PENDING = "pending", "Pending"
+        APPROVED = "approved", "Approved"
+        REJECTED = "rejected", "Rejected"
+
+    invoice = models.ForeignKey(Invoice, on_delete=models.CASCADE, related_name="payment_requests")
+    customer = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="+")
+    method = models.CharField(max_length=15, choices=Payment.Method.choices)
+    amount = models.DecimalField(max_digits=14, decimal_places=2)
+    reference = models.CharField(max_length=255, blank=True)
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING, db_index=True)
+    decided_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, blank=True, related_name="+")
+    decided_at = models.DateTimeField(null=True, blank=True)
+    decision_note = models.CharField(max_length=255, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-id"]
+
+
+class SalesTarget(models.Model):
+    salesperson = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="sales_targets")
+    month = models.DateField(help_text="Stored as the first day of the month.")
+    amount = models.DecimalField(max_digits=14, decimal_places=2, help_text="New monthly recurring revenue to sell.")
+
+    class Meta:
+        ordering = ["-month", "salesperson_id"]
+        constraints = [models.UniqueConstraint(fields=["salesperson", "month"], name="uniq_sales_target")]

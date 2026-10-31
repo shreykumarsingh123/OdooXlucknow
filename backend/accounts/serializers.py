@@ -9,8 +9,8 @@ class MeSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name", "name", "role", "company", "phone", "address"]
-        read_only_fields = ["id", "email", "role"]
+        fields = ["id", "email", "first_name", "last_name", "name", "role", "department", "company", "phone", "address"]
+        read_only_fields = ["id", "email", "role", "department"]
 
 
 class SignupSerializer(serializers.ModelSerializer):
@@ -42,7 +42,7 @@ class PersonSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ["id", "email", "first_name", "last_name", "name", "company", "phone", "address", "is_active", "date_joined"]
+        fields = ["id", "email", "first_name", "last_name", "name", "department", "company", "phone", "address", "is_active", "date_joined"]
         read_only_fields = ["id", "date_joined"]
         extra_kwargs = {"email": {"validators": []}}  # validate_email checks uniqueness in any letter case
 

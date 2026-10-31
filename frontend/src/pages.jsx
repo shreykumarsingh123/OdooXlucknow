@@ -70,6 +70,7 @@ function BarList({ title, rows, name, value, format, empty, note }) {
 }
 
 export function Dashboard() {
+  const { user } = useAuth()
   const [from, setFrom] = useState('')
   const [to, setTo] = useState('')
   const { data, error, loading, reload } = useLoad(`/reports/summary/${query({ from, to })}`)
@@ -122,11 +123,17 @@ export function Dashboard() {
       {loading && !data && <p className="muted">Loading…</p>}
       {data && (
         <>
+          {data.payment_requests_pending > 0 && user.role === 'admin' && (
+            <div className="banner">
+              <span><b>{data.payment_requests_pending} payment(s) waiting for your approval.</b></span>
+              <Link className="button primary" to="/payment-approvals">Review</Link>
+            </div>
+          )}
           {(data.due_for_billing > 0 || data.drafts_to_confirm > 0) && (
             <div className="banner">
               <span>
                 {data.due_for_billing > 0 && <b>{data.due_for_billing} subscription(s) due for billing. </b>}
-                {data.drafts_to_confirm > 0 && <Link to="/invoices?state=draft">{data.drafts_to_confirm} draft invoice(s) to confirm.</Link>}
+                {data.drafts_to_confirm > 0 && <Link to="/invoices?state=draft">{data.drafts_to_confirm} draft invoice(s) to confirm. </Link>}
               </span>
               {data.due_for_billing > 0 && <button className="primary" disabled={running} onClick={runBilling}>{running ? 'Billing…' : 'Run billing'}</button>}
             </div>
@@ -441,8 +448,10 @@ function SubscriptionEditor({ record }) {
   const plans = useOptions('/plans/')
   const terms = useOptions('/payment-terms/')
   const products = useOptions('/products/')
+  const { user } = useAuth()
+  const sellers = useOptions(user.role === 'admin' ? '/staff/?department=sales' : null)
   const [form, setForm] = useState(record ? {
-    customer: record.customer, plan: record.plan, payment_term: record.payment_term, start_date: record.start_date, expiry_date: record.expiry_date,
+    customer: record.customer, plan: record.plan, payment_term: record.payment_term, start_date: record.start_date, expiry_date: record.expiry_date, salesperson: record.salesperson,
     lines: record.lines.filter((l) => !l.is_plan_fee).map((l) => ({ product: l.product, variant: l.variant, quantity: l.quantity, unit_price: l.unit_price, taxes: l.tax_ids })),
   } : { customer: null, plan: '', payment_term: '', start_date: isoToday(), expiry_date: '', lines: [{ product: '', variant: null, quantity: 1 }] })
   const [error, setError] = useState(null)
@@ -477,6 +486,14 @@ function SubscriptionEditor({ record }) {
               {plans.filter((p) => p.is_active).map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
             </select>
           </Field>
+          {user.role === 'admin' && (
+            <Field label="Sold by" error={error?.fields?.salesperson}>
+              <select value={form.salesperson || ''} onChange={(e) => set({ salesperson: e.target.value ? Number(e.target.value) : null })}>
+                <option value="">Nobody</option>
+                {sellers.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+              </select>
+            </Field>
+          )}
           <Field label="Start date" error={error?.fields?.start_date}><input type="date" required value={form.start_date} onChange={(e) => set({ start_date: e.target.value })} /></Field>
           <Field label="Expiry date" error={error?.fields?.expiry_date}><input type="date" required value={form.expiry_date} onChange={(e) => set({ expiry_date: e.target.value })} /></Field>
           <Field label="Payment terms" error={error?.fields?.payment_term}>
@@ -497,7 +514,7 @@ function SubscriptionEditor({ record }) {
 
 const STAGES = ['draft', 'quotation', 'confirmed', 'active', 'closed']
 const SUB_ACTIONS = {
-  quote: 'Send quotation', confirm: 'Confirm', activate: 'Activate', pause: 'Pause', resume: 'Resume', renew: 'Renew',
+  quote: 'Send quotation', confirm: 'Confirm', activate: 'Activate', pause: 'Pause', resume: 'Resume', renew: 'Renew now',
 }
 const CLOSE_REASONS = [['too_expensive', 'Too expensive'], ['missing_features', 'Missing features'], ['not_using', 'Not using it enough'], ['switched', 'Switched to another product'], ['other', 'Something else']]
 
@@ -768,15 +785,21 @@ export function SubscriptionDetail() {
           {can('change_plan') && <button onClick={() => setModal('plan')}>Change plan</button>}
           {can('redeem') && <button onClick={() => setModal('code')}>Promo code</button>}
           {can('adjust') && <button onClick={() => setModal('adjust')}>Charge or credit</button>}
-          {can('close') && <button className="danger" onClick={() => setModal('close')}>Close</button>}
+          {can('auto_renew') && (
+            sub.auto_renew
+              ? <button onClick={() => window.confirm(`Turn off automatic renewal? This subscription will end on ${sub.expiry_date}.`) && act('auto_renew', { enabled: false }, `Automatic renewal is off. It ends on ${sub.expiry_date}.`)}>Turn off renewal</button>
+              : <button className="primary" onClick={() => act('auto_renew', { enabled: true }, 'Automatic renewal is on.')}>Turn on renewal</button>
+          )}
+          {can('close') && <button className="danger" onClick={() => setModal('close')}>{team ? 'Close' : 'Cancel now'}</button>}
         </div>
       </header>
-      <Stepper state={sub.state} />
+      {team && <Stepper state={sub.state} />}
       <div className="card">
         <dl className="facts">
           <div><dt>Plan</dt><dd>{sub.plan_name} ({sub.billing_period})</dd></div>
           <div><dt>Start date</dt><dd>{sub.start_date}</dd></div>
-          <div><dt>Expiry date</dt><dd>{sub.expiry_date}</dd></div>
+          <div><dt>{sub.renews ? 'Renews on' : 'Ends on'}</dt><dd>{sub.expiry_date}{sub.renews && <small className="fact-note">Automatically, unless you turn it off</small>}</dd></div>
+          {team && sub.salesperson_name && <div><dt>Sold by</dt><dd>{sub.salesperson_name}</dd></div>}
           <div><dt>Payment terms</dt><dd>{sub.payment_term_name}</dd></div>
           {inTrial(sub) && <div><dt>Free trial until</dt><dd>{sub.trial_ends}</dd></div>}
           {sub.next_invoice_date && sub.state === 'active' && <div><dt>Next invoice</dt><dd>{sub.next_invoice_date}</dd></div>}
@@ -912,7 +935,7 @@ export function Invoices() {
 
 const METHODS = [['bank_transfer', 'Bank transfer'], ['card', 'Card'], ['upi', 'UPI'], ['cash', 'Cash'], ['cheque', 'Cheque']]
 
-function PaymentModal({ invoice, onClose, onDone }) {
+function PaymentModal({ invoice, onClose, onDone, request }) {
   const [form, setForm] = useState({ method: 'bank_transfer', amount: invoice.amount_due, date: isoToday(), note: '' })
   const [error, setError] = useState(null)
   const set = (patch) => setForm((f) => ({ ...f, ...patch }))
@@ -920,23 +943,25 @@ function PaymentModal({ invoice, onClose, onDone }) {
     event.preventDefault()
     setError(null)
     try {
-      await api.post('/payments/', { ...form, invoice: invoice.id })
+      if (request) await api.post(`/invoices/${invoice.id}/request_payment/`, { method: form.method, amount: form.amount, reference: form.note })
+      else await api.post('/payments/', { ...form, invoice: invoice.id })
       onDone()
     } catch (err) {
       setError(err)
     }
   }
   return (
-    <Modal title={`Record payment for ${invoice.number}`} onClose={onClose}>
+    <Modal title={request ? `Tell us you paid ${invoice.number}` : `Record payment for ${invoice.number}`} onClose={onClose}>
       <form className="form" onSubmit={submit}>
         <ErrorBox error={error} />
+        {request && <p className="muted">The admin checks that the money arrived, then approves it. Nothing changes on the invoice until then.</p>}
         <Field label="Method" error={error?.fields?.method}>
           <select value={form.method} onChange={(e) => set({ method: e.target.value })}>{METHODS.map(([v, t]) => <option key={v} value={v}>{t}</option>)}</select>
         </Field>
         <Field label="Amount" error={error?.fields?.amount} help={`${money(invoice.amount_due)} still due`}><input type="number" min="0.01" step="0.01" required value={form.amount} onChange={(e) => set({ amount: e.target.value })} /></Field>
-        <Field label="Date" error={error?.fields?.date}><input type="date" required value={form.date} onChange={(e) => set({ date: e.target.value })} /></Field>
-        <Field label="Note" error={error?.fields?.note}><input value={form.note} onChange={(e) => set({ note: e.target.value })} /></Field>
-        <footer><button type="button" onClick={onClose}>Cancel</button><button className="primary">Record payment</button></footer>
+        {!request && <Field label="Date" error={error?.fields?.date}><input type="date" required value={form.date} onChange={(e) => set({ date: e.target.value })} /></Field>}
+        <Field label={request ? 'Payment reference' : 'Note'} error={error?.fields?.note || error?.fields?.reference} help={request ? 'For example, the UPI or bank reference.' : null}><input maxLength="255" value={form.note} onChange={(e) => set({ note: e.target.value })} /></Field>
+        <footer><button type="button" onClick={onClose}>Cancel</button><button className="primary">{request ? 'Send for approval' : 'Record payment'}</button></footer>
       </form>
     </Modal>
   )
@@ -1006,7 +1031,7 @@ export function InvoiceDetail() {
     try {
       location.assign((await api.post(`/invoices/${id}/checkout/`)).url)
     } catch (err) {
-      toast(err.message, 'bad')
+      toast(`${err.message} You can use "I paid another way" instead.`, 'bad')
     }
   }
   const act = async (path, message) => {
@@ -1027,7 +1052,8 @@ export function InvoiceDetail() {
       <header className="page-head no-print">
         <div><h1>{inv.number} {invoiceBadge(inv)}</h1></div>
         <div className="row">
-          {can('pay_online') && <button className="primary" onClick={payOnline}>Pay online</button>}
+          {can('pay_online') && <button className="primary" onClick={payOnline}>Pay by card</button>}
+          {can('request_payment') && !inv.pending_request && <button onClick={() => setModal('request')}>{can('pay_online') ? 'I paid another way' : 'Tell us you paid'}</button>}
           {can('confirm') && <button className="primary" onClick={() => act('confirm', 'Invoice confirmed.')}>Confirm</button>}
           {can('pay') && <button className="primary" onClick={() => setModal('pay')}>Record payment</button>}
           {can('send') && <button onClick={() => act('send', `Invoice sent to ${inv.customer_email}.`)}>{inv.sent_at ? 'Send again' : 'Send'}</button>}
@@ -1035,6 +1061,7 @@ export function InvoiceDetail() {
           {can('cancel') && <button className="danger" onClick={() => setModal('cancel')}>Cancel invoice</button>}
         </div>
       </header>
+      {inv.pending_request && <div className="banner no-print"><span><b>Waiting for approval: </b>{money(inv.pending_request.amount)} by {inv.pending_request.method}. The invoice updates once the admin approves it.</span></div>}
       <div className="card paper">
         <div className="paper-head">
           <div><h2>Brightloop Software</h2><p className="muted">Invoice {inv.number}</p></div>
@@ -1084,6 +1111,7 @@ export function InvoiceDetail() {
         />
       </div>
       {modal === 'pay' && <PaymentModal invoice={inv} onClose={() => setModal(null)} onDone={finish('Payment recorded.')} />}
+      {modal === 'request' && <PaymentModal request invoice={inv} onClose={() => setModal(null)} onDone={finish('Sent to the admin for approval.')} />}
       {modal === 'cancel' && <CancelModal invoice={inv} onClose={() => setModal(null)} onDone={finish('Invoice cancelled.')} />}
     </section>
   )

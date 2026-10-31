@@ -8,8 +8,9 @@ from django.utils import timezone
 
 from accounts.models import User
 from billing import services
-from billing.models import Invoice, Payment, Subscription, SubscriptionLine
+from billing.models import Invoice, Payment, PaymentRequest, SalesTarget, Subscription, SubscriptionLine
 from catalog.models import Discount, PaymentTerm, Plan, Product, ProductVariant, QuotationTemplate, QuotationTemplateLine, Tax
+from support.models import TeamMessage, Ticket, TicketMessage
 
 DEMO_PASSWORD = "Brightloop@123"  # demo accounts only; the command refuses to run outside DEBUG
 
@@ -90,10 +91,21 @@ class Command(BaseCommand):
         Discount.objects.get_or_create(
             name="Welcome offer", defaults={"kind": "percent", "value": Decimal("20"), "scope": "subscriptions", "start_date": start, "code": "WELCOME20"}
         )
+        Discount.objects.get_or_create(
+            name="500 account credit", defaults={"reward": "credit", "value": Decimal("500"), "scope": "subscriptions", "start_date": start, "code": "GIFT500"}
+        )
+        Discount.objects.get_or_create(
+            name="One month free", defaults={"reward": "free_days", "value": Decimal("30"), "scope": "subscriptions", "start_date": start, "code": "FREEMONTH"}
+        )
+        Discount.objects.get_or_create(
+            name="Priority onboarding", defaults={"reward": "perk", "perk_text": "A free priority onboarding call", "scope": "subscriptions", "start_date": start, "code": "VIPCALL"}
+        )
 
     def people(self):
         self.person("admin@brightloop.example", User.Role.ADMIN, first_name="Asha", last_name="Admin", is_staff=True, is_superuser=True)
-        self.person("staff@brightloop.example", User.Role.STAFF, first_name="Sam", last_name="Sales")
+        self.person("staff@brightloop.example", User.Role.STAFF, first_name="Gita", last_name="General")
+        self.care = self.person("care@brightloop.example", User.Role.STAFF, first_name="Chitra", last_name="Care", department="support")
+        self.sales = self.person("sales@brightloop.example", User.Role.STAFF, first_name="Sam", last_name="Sales", department="sales")
         self.acme = self.person("customer@acme.example", User.Role.CUSTOMER, first_name="Priya", last_name="Verma", company="Acme Retail", address="12 Hazratganj, Lucknow")
         self.globex = self.person("finance@globex.example", User.Role.CUSTOMER, first_name="Rahul", last_name="Khan", company="Globex Industries", address="88 Gomti Nagar, Lucknow")
 
@@ -110,6 +122,8 @@ class Command(BaseCommand):
             services.confirm(sub.pk)
         if state == "active":
             services.activate(sub.pk)
+            Subscription.objects.filter(pk=sub.pk).update(activated_on=start)
+        Subscription.objects.filter(pk=sub.pk).update(salesperson=self.sales)
         return sub
 
     def stories(self):
@@ -134,6 +148,23 @@ class Command(BaseCommand):
             services.record_payment(invoices[0].pk, "upi", invoices[0].total, invoices[0].due_date, "Paid in full", admin)
         if len(invoices) > 1:
             services.record_payment(invoices[1].pk, "bank_transfer", Decimal("1000"), self.today, "Part payment", admin)
+        if len(invoices) > 2:
+            PaymentRequest.objects.create(
+                invoice=invoices[2], customer=self.acme, method="upi", amount=invoices[2].amount_due, reference="UPI ref 4471920"
+            )
+        for back in range(0, 6):
+            month = services.add_months(self.today.replace(day=1), -back)
+            SalesTarget.objects.get_or_create(salesperson=self.sales, month=month, defaults={"amount": Decimal("6000")})
+        ticket = Ticket.objects.create(customer=self.acme, subject="Cannot find my last invoice", priority="normal", number=None)
+        ticket.number = f"TCK-{ticket.pk:06d}"
+        ticket.save(update_fields=["number"])
+        TicketMessage.objects.create(ticket=ticket, author=self.acme, body="Hello, I cannot find last month's invoice. Can you help?")
+        urgent = Ticket.objects.create(customer=self.globex, subject="Charged for too many seats", priority="high", escalated=True)
+        urgent.number = f"TCK-{urgent.pk:06d}"
+        urgent.save(update_fields=["number"])
+        TicketMessage.objects.create(ticket=urgent, author=self.globex, body="We have 20 seats, but the quote says 25.")
+        TicketMessage.objects.create(ticket=urgent, author=self.care, body="Admin, can you check this contract?", is_internal=True)
+        TeamMessage.objects.create(author=self.care, body="Globex asked about their seat count. I escalated the ticket.")
 
     def volume(self, count):
         """Bulk insert for speed. These rows skip the workflow on purpose and only exist to test page load times."""

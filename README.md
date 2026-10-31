@@ -95,4 +95,12 @@ Logged-out visitors at `/` see the landing page, with prices from `GET /api/publ
 | Change plan, promo code, pause before closing | Subscription page |
 | One-off charge or credit | Subscription page, admin only |
 | CSV exports, recurring revenue by plan, overdue aging, churn reasons | Dashboard |
-| Revenue recognition, deferred revenue, analysis and history | Revenue page, team only |
+| Revenue recognition, deferred revenue, analysis and history | Revenue page, back office only |
+| Tickets, internal notes, escalation | Tickets page; customers raise them under Help |
+| Team chat | Team chat page |
+| Monthly targets and sales metrics | Sales page; the admin sets targets under Sales targets |
+| Approve payments made outside Stripe | Payment approvals, admin only |
+| Customer account and Assign a plan | Click a customer's name |
+| Bring in existing subscribers | Import subscribers, with a Load sample data button |
+
+Demo logins also include `care@brightloop.example` (customer care) and `sales@brightloop.example` (sales).

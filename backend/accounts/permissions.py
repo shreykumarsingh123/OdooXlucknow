@@ -11,6 +11,13 @@ class IsTeam(BasePermission):
         return request.user.is_authenticated and request.user.is_team
 
 
+class IsBackOffice(BasePermission):
+    """Finance and billing work. Not for the customer care and sales departments."""
+
+    def has_permission(self, request, view):
+        return request.user.is_authenticated and request.user.is_back_office
+
+
 class AdminWriteTeamRead(BasePermission):
     """Admin manages the catalog. Staff can read it. Customers cannot see it."""
 

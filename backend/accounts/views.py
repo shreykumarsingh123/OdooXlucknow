@@ -137,7 +137,8 @@ class PersonViewSet(
         return User.objects.filter(role=self.role)
 
     def perform_create(self, serializer):
-        user = serializer.save(role=self.role)
+        extra = {"department": ""} if self.role == User.Role.CUSTOMER else {}
+        user = serializer.save(role=self.role, **extra)
         user.set_unusable_password()
         user.save(update_fields=["password"])
         try:
@@ -154,3 +155,4 @@ class CustomerViewSet(PersonViewSet):
 class StaffViewSet(PersonViewSet):
     permission_classes = [IsAdmin]
     role = User.Role.STAFF
+    filterset_fields = ["is_active", "department"]

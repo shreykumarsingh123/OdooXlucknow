@@ -25,11 +25,17 @@ export const tokens = {
 async function refreshAccess() {
   const refresh = localStorage.getItem(REFRESH)
   if (!refresh) return false
-  const response = await fetch(`${BASE}/auth/refresh/`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ refresh }),
-  })
+  let response
+  try {
+    response = await fetch(`${BASE}/auth/refresh/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refresh }),
+    })
+  } catch {
+    // The server is out of reach. That says nothing about the session, so keep it.
+    throw new ApiError(0, { message: 'Cannot reach the server. Check your connection and try again.' })
+  }
   if (!response.ok) return false
   tokens.set((await response.json()).access)
   return true
