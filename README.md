@@ -1,4 +1,6 @@
 #please try running this code it was impossible to describe a full fledge near production code in just 10 minutes in a video 
+Website: https://scored-node-clips-unlock.trycloudflare.com
+this is a test website which shows the automatic subscription tracking ability of subscription Manbhawan site: https://scored-node-clips-unlock.trycloudflare.com/shop/mb7k2q
 # Brightloop
 
 Brightloop is a subscription management platform for many businesses. Each business runs its own plans, billing, payments, support and sales here, and Brightloop tracks the subscriptions made on their sites.
