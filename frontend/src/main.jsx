@@ -5,7 +5,7 @@ import { api, tokens } from './api'
 import { CrudPage } from './CrudPage'
 import * as configs from './configs'
 import { Landing } from './landing'
-import { BrowsePlans, Dashboard, InvoiceDetail, Invoices, Payments, Profile, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
+import { BrowsePlans, Dashboard, InvoiceDetail, Invoices, Payments, Profile, Revenue, SubscriptionDetail, SubscriptionForm, Subscriptions } from './pages'
 import './styles.css'
 import { ErrorBox, Field, ToastProvider } from './ui'
 
@@ -216,6 +216,7 @@ const ICONS = {
   '/subscriptions': 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3',
   '/invoices': 'M6 2h9l5 5v15H6zM14 2v6h6M9 13h8M9 17h8',
   '/payments': 'M2 6h20v13H2zM2 10h20M6 15h4',
+  '/revenue': 'M3 17l6-6 4 4 8-8M15 7h6v6',
   '/customers': 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8',
   '/products': 'M21 8l-9-5-9 5v8l9 5 9-5zM3 8l9 5 9-5M12 13v8',
   '/plans': 'M4 6h16M4 12h16M4 18h10',
@@ -235,7 +236,7 @@ function NavIcon({ to }) {
   )
 }
 
-const BILLING = [['/', 'Dashboard'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices'], ['/payments', 'Payments'], ['/customers', 'Customers']]
+const BILLING = [['/', 'Dashboard'], ['/subscriptions', 'Subscriptions'], ['/invoices', 'Invoices'], ['/payments', 'Payments'], ['/revenue', 'Revenue'], ['/customers', 'Customers']]
 const CATALOG = [['/products', 'Products'], ['/plans', 'Plans'], ['/templates', 'Quotation templates'], ['/taxes', 'Taxes'], ['/discounts', 'Discounts'], ['/payment-terms', 'Payment terms']]
 const NAV = {
   admin: [['Billing', BILLING], ['Setup', [...CATALOG, ['/staff', 'Staff']]]],
@@ -311,6 +312,7 @@ function App() {
         <Route path="invoices" element={<Invoices />} />
         <Route path="invoices/:id" element={<InvoiceDetail />} />
         <Route path="payments" element={team(<Payments />)} />
+        <Route path="revenue" element={team(<Revenue />)} />
         <Route path="customers" element={team(<CrudPage key="customers" config={configs.customers} />)} />
         <Route path="products" element={team(<CrudPage key="products" config={configs.products} />)} />
         <Route path="plans" element={team(<CrudPage key="plans" config={configs.plans} />)} />

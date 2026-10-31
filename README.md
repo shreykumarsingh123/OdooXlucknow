@@ -95,3 +95,4 @@ Logged-out visitors at `/` see the landing page, with prices from `GET /api/publ
 | Change plan, promo code, pause before closing | Subscription page |
 | One-off charge or credit | Subscription page, admin only |
 | CSV exports, recurring revenue by plan, overdue aging, churn reasons | Dashboard |
+| Revenue recognition, deferred revenue, analysis and history | Revenue page, team only |

@@ -36,6 +36,7 @@
 | 18 | Analytics: revenue per customer, recurring revenue by plan, overdue aging, churn reasons; CSV exports | R-35 | Done |
 | 19 | Customer profile page | R-36 | Done |
 | 20 | Animated landing page at `/`, with pricing from the live API, and page transitions | R-37 | Done |
+| 21 | Revenue page: recognition, deferred revenue, analysis and history | R-38 | Done |
 
 ### Rules for this work
 
@@ -56,6 +57,6 @@
 
 ## Not doing
 
-Recurly features that need outside services or far more scope: multiple payment gateways, fraud tools, machine-learning payment retries, revenue recognition, Shopify commerce, mobile SDKs, an AI assistant, and outgoing webhooks.
+Recurly features that need outside services or far more scope: multiple payment gateways, fraud tools, machine-learning payment retries, Shopify commerce, mobile SDKs, an AI assistant, and outgoing webhooks.
 
 Also not doing: PDF files (invoices print from the browser), multi-currency, usage billing, and plan changes between different billing periods.

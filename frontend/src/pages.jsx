@@ -197,6 +197,137 @@ export function Dashboard() {
   )
 }
 
+/* ------------------------------------------------------------ revenue */
+
+const shortMonth = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-IN', { month: 'short', year: '2-digit' })
+const longMonth = (iso) => new Date(`${iso}T00:00:00`).toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })
+
+function RecognitionChart({ rows }) {
+  const value = (r) => Number(r.recognized) + Number(r.scheduled)
+  const peak = Math.max(...rows.map(value), 1)
+  return (
+    <div className="card flush">
+      <div className="chart-head">
+        <h2>Revenue earned by month</h2>
+        <div className="legend"><span><i className="swatch" />Recognized</span><span><i className="swatch later" />Scheduled</span></div>
+      </div>
+      <div className="chart">
+        <div className="plot" role="img" aria-label="Revenue earned by month. Every value is in the table below.">
+          {rows.map((r) => (
+            <div className="bar-slot" key={r.month} tabIndex={0}>
+              <div className="bar-tip" style={{ bottom: `${(value(r) / peak) * 100}%` }}><span className="tip">{longMonth(r.month)}: {money(r.recognized)} recognized{Number(r.scheduled) > 0 ? `, ${money(r.scheduled)} scheduled` : ''}</span></div>
+              <div className="bar-stack">
+                {Number(r.scheduled) > 0 && <div className="bar later" style={{ height: `${(Number(r.scheduled) / peak) * 100}%` }} />}
+                {Number(r.recognized) > 0 && <div className="bar" style={{ height: `${(Number(r.recognized) / peak) * 100}%` }} />}
+              </div>
+            </div>
+          ))}
+        </div>
+        <div className="axis">{rows.map((r) => <span key={r.month}>{shortMonth(r.month)}</span>)}</div>
+      </div>
+    </div>
+  )
+}
+
+function ShareTable({ title, rows, name, empty }) {
+  return (
+    <div className="card flush share">
+      <h2>{title}</h2>
+      <DataTable
+        rowKey="name"
+        rows={rows}
+        empty={empty}
+        columns={[
+          { key: 'name', label: name, render: (r) => label(r.name) },
+          { key: 'amount', label: 'Recognized', right: true, render: (r) => money(r.amount) },
+          { key: 'share', label: 'Share', right: true, render: (r) => `${r.share}%` },
+        ]}
+      />
+    </div>
+  )
+}
+
+export function Revenue() {
+  const toast = useToast()
+  const plans = useOptions('/plans/')
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [plan, setPlan] = useState('')
+  const [period, setPeriod] = useState('')
+  const params = query({ from: from && `${from}-01`, to: to && `${to}-01`, plan, period })
+  const { data, error, loading, reload } = useLoad(`/reports/revenue/${params}`)
+  const exportCsv = async () => {
+    try {
+      await api.download(`/reports/export/revenue/${params}`, 'brightloop-revenue.csv')
+    } catch (err) {
+      toast(err.message, 'bad')
+    }
+  }
+  const s = data?.summary
+  // Future months with nothing scheduled only add empty rows.
+  const history = data?.history.filter((r) => r.status !== 'scheduled' || Number(r.scheduled) > 0) || []
+  return (
+    <section>
+      <header className="page-head">
+        <div><h1>Revenue</h1><p className="muted">Each invoice is earned evenly per day over the period it covers. Figures are before tax.</p></div>
+        <button onClick={exportCsv}>Export CSV</button>
+      </header>
+      <div className="toolbar">
+        <Field label="From month"><input type="month" value={from} onChange={(e) => setFrom(e.target.value)} /></Field>
+        <Field label="To month"><input type="month" value={to} onChange={(e) => setTo(e.target.value)} /></Field>
+        <Field label="Plan">
+          <select value={plan} onChange={(e) => setPlan(e.target.value)}>
+            <option value="">All plans</option>
+            {plans.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Billing period">
+          <select value={period} onChange={(e) => setPeriod(e.target.value)}>
+            <option value="">All periods</option>
+            {['daily', 'weekly', 'monthly', 'yearly'].map((p) => <option key={p} value={p}>{label(p)}</option>)}
+          </select>
+        </Field>
+      </div>
+      <ErrorBox error={error} onRetry={reload} />
+      {loading && !data && <p className="muted">Loading…</p>}
+      {data && (
+        <>
+          <div className="tiles">
+            <Tile title="Recognized to date" value={money(s.recognized_to_date)} note={`Earned up to ${data.as_of}`} />
+            <Tile title="Deferred revenue" value={money(s.deferred)} note="Billed, but not earned yet" />
+            <Tile title="Recognized this month" value={money(s.recognized_this_month)} note={`${money(s.scheduled_this_month)} more scheduled this month`} />
+            <Tile title="Recognized last month" value={money(s.recognized_last_month)} note="A full month" />
+            <Tile title="Billed to date" value={money(s.billed_to_date)} note="Confirmed and paid invoices" />
+          </div>
+          <RecognitionChart rows={history} />
+          <div className="card flush">
+            <h2>Revenue history</h2>
+            <DataTable
+              rowKey="month"
+              rows={[...history].reverse()}
+              columns={[
+                { key: 'month', label: 'Month', render: (r) => longMonth(r.month) },
+                { key: 'status', label: 'Status', render: (r) => <Badge value={r.status} /> },
+                { key: 'recognized', label: 'Recognized', right: true, render: (r) => money(r.recognized) },
+                { key: 'scheduled', label: 'Scheduled', right: true, render: (r) => (Number(r.scheduled) ? money(r.scheduled) : '—') },
+                { key: 'change', label: 'On prior month', right: true, render: (r) => (r.change === null ? '—' : `${r.change > 0 ? '+' : ''}${r.change}%`) },
+                { key: 'billed', label: 'Billed', right: true, render: (r) => money(r.billed) },
+                { key: 'collected', label: 'Collected, with tax', right: true, render: (r) => money(r.collected) },
+                { key: 'deferred_end', label: 'Deferred at month end', right: true, render: (r) => money(r.deferred_end) },
+              ]}
+            />
+          </div>
+          <div className="grid-3">
+            <ShareTable title="By plan" name="Plan" rows={data.by_plan} empty="No revenue in this period." />
+            <ShareTable title="Monthly and yearly customers" name="Billing period" rows={data.by_period} empty="No revenue in this period." />
+            <ShareTable title="Top customers" name="Customer" rows={data.top_customers} empty="No revenue in this period." />
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 /* ------------------------------------------------------------ subscriptions */
 
 const SUB_STATES = ['draft', 'quotation', 'confirmed', 'active', 'paused', 'closed']
@@ -835,9 +966,29 @@ function CancelModal({ invoice, onClose, onDone }) {
   )
 }
 
+function RecognitionCard({ id, state }) {
+  const { data } = useLoad(`/invoices/${id}/recognition/?state=${state}`)
+  if (!data?.length) return null
+  return (
+    <div className="card flush no-print">
+      <h2>Revenue recognition</h2>
+      <DataTable
+        rowKey="month"
+        rows={data}
+        columns={[
+          { key: 'month', label: 'Month', render: (r) => longMonth(r.month) },
+          { key: 'recognized', label: 'Recognized', right: true, render: (r) => money(r.recognized) },
+          { key: 'scheduled', label: 'Scheduled', right: true, render: (r) => (Number(r.scheduled) ? money(r.scheduled) : '—') },
+        ]}
+      />
+    </div>
+  )
+}
+
 export function InvoiceDetail() {
   const { id } = useParams()
   const toast = useToast()
+  const { user } = useAuth()
   const { data: inv, error, reload } = useLoad(`/invoices/${id}/`)
   const [modal, setModal] = useState(null)
   const [params, setParams] = useSearchParams()
@@ -918,6 +1069,7 @@ export function InvoiceDetail() {
           <div className="grand"><dt>Amount due</dt><dd>{money(inv.amount_due)}</dd></div>
         </dl>
       </div>
+      {user.role !== 'customer' && <RecognitionCard id={id} state={inv.state} />}
       <div className="card flush no-print">
         <h2>Payments</h2>
         <DataTable

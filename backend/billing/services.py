@@ -192,12 +192,15 @@ def activate(subscription_id):
 
 def _start_billing(sub):
     """Go active. A plan's free trial delays the first invoice, once per customer per plan."""
-    used_before = Subscription.objects.filter(customer_id=sub.customer_id, plan_id=sub.plan_id, state__in=[S.ACTIVE, S.PAUSED, S.CLOSED]).exclude(pk=sub.pk).exists()
+    used_before = Subscription.objects.filter(
+        Q(plan_id=sub.plan_id) | Q(trial_plan_id=sub.plan_id), customer_id=sub.customer_id, state__in=[S.ACTIVE, S.PAUSED, S.CLOSED]
+    ).exclude(pk=sub.pk).exists()
     trial = 0 if used_before else sub.plan.trial_days
     sub.state = S.ACTIVE
     sub.trial_ends = sub.start_date + timedelta(days=trial) if trial else None
+    sub.trial_plan = sub.plan if trial else None
     sub.next_invoice_date = sub.trial_ends or sub.start_date
-    sub.save(update_fields=["state", "trial_ends", "next_invoice_date", "updated_at"])
+    sub.save(update_fields=["state", "trial_ends", "trial_plan", "next_invoice_date", "updated_at"])
 
 
 @transaction.atomic
@@ -308,6 +311,11 @@ def change_plan(subscription_id, new_plan, actor=None, today=None):
         raise Conflict("You can only change to a plan with the same billing period.")
     if not new_plan.available_on(today):
         raise Conflict("That plan is not available right now.")
+    if sub.trial_ends and sub.trial_ends > today:
+        raise Conflict("You can change plan when your free trial ends.")
+    # Otherwise upgrading and downgrading in a loop would pile up credit against charges nobody has paid.
+    if sub.invoices.filter(is_adjustment=True, state__in=[I.DRAFT, I.CONFIRMED]).exists():
+        raise Conflict("Please pay the outstanding plan change invoice first.")
     quantity = sum(line.quantity for line in sub.lines.all() if not line.is_plan_fee)
     if quantity < new_plan.min_quantity and new_plan.min_quantity > 1:
         raise Conflict(f"That plan needs a minimum quantity of {new_plan.min_quantity}.")
@@ -341,10 +349,12 @@ def change_plan(subscription_id, new_plan, actor=None, today=None):
     if difference > 0:
         _adjustment_invoice(sub, f"{new_plan.name}: prorated change from {old.name}", difference - tax_part, tax_part, today)
         message += f", {difference} charged for the rest of the period"
-    elif difference < 0:
+    elif difference < 0 and billed.state == I.PAID:
         sub.credit_balance += -difference
         sub.save(update_fields=["credit_balance", "updated_at"])
         message += f", {-difference} credited"
+    elif difference < 0:
+        message += ", no credit because the invoice for this period is not paid"
     log_event(sub.pk, message, actor)
     return sub
 

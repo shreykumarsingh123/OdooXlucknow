@@ -35,6 +35,8 @@ class Subscription(models.Model):
     close_reason = models.CharField(max_length=20, choices=CloseReason.choices, blank=True)
     close_note = models.CharField(max_length=255, blank=True)
     trial_ends = models.DateField(null=True, blank=True)
+    # The plan the free trial was given on. Kept after a plan change, so that trial cannot be taken again.
+    trial_plan = models.ForeignKey(Plan, on_delete=models.PROTECT, null=True, blank=True, related_name="+")
     # Owed to the customer, for example after a downgrade. Taken off the next invoices.
     credit_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     created_at = models.DateTimeField(auto_now_add=True)

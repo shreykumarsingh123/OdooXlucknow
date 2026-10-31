@@ -22,7 +22,7 @@ from accounts.permissions import IsTeam
 from catalog.models import Plan, money
 from config.api import Conflict
 
-from . import services
+from . import revenue, services
 from .models import Invoice, Payment, Subscription
 from .serializers import (
     AdjustSerializer,
@@ -158,6 +158,9 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=["post"])
     def change_plan(self, request, pk=None):
         sub = self.get_object()
+        # A team-arranged or fixed-term plan is a commitment, so a customer cannot switch out of it.
+        if not request.user.is_team and not (sub.plan.is_public and sub.plan.closable):
+            raise PermissionDenied("Please contact Brightloop to change this plan.")
         plans = Plan.objects.all() if request.user.is_team else Plan.objects.filter(is_public=True)
         plan = plans.filter(pk=request.data.get("plan")).first() if str(request.data.get("plan", "")).isdigit() else None
         if plan is None:
@@ -267,6 +270,10 @@ class InvoiceViewSet(mixins.ListModelMixin, mixins.RetrieveModelMixin, viewsets.
         services.confirm_checkout(str(request.data.get("session_id", "")), invoice.pk)
         fresh = self.get_queryset().get(pk=invoice.pk)
         return Response(InvoiceDetailSerializer(fresh, context=self.get_serializer_context()).data)
+
+    @action(detail=True, methods=["get"], permission_classes=[IsTeam])
+    def recognition(self, request, pk=None):
+        return Response(revenue.invoice_schedule(self.get_object()))
 
     @action(detail=False, methods=["post"], permission_classes=[IsTeam])
     def bulk(self, request):
@@ -479,6 +486,27 @@ def report_summary(request):
     })
 
 
+def _revenue_params(request):
+    start, end = _date_param(request, "from"), _date_param(request, "to")
+    if start and end and start > end:
+        raise serializers.ValidationError({"to": ["The end month cannot be before the start month."]})
+    if start and end and (end.year - start.year) * 12 + end.month - start.month > 60:
+        raise serializers.ValidationError({"to": ["Choose at most five years."]})
+    plan = request.query_params.get("plan") or None
+    if plan and not plan.isdigit():
+        raise serializers.ValidationError({"plan": ["Choose a plan."]})
+    period = request.query_params.get("period") or None
+    if period and period not in Plan.Period.values:
+        raise serializers.ValidationError({"period": ["Choose a billing period."]})
+    return {"start": start, "end": end, "plan": plan, "period": period}
+
+
+@api_view(["GET"])
+@permission_classes([IsTeam])
+def revenue_summary(request):
+    return Response(revenue.revenue_report(**_revenue_params(request)))
+
+
 class _Echo:
     def write(self, value):
         return value
@@ -512,6 +540,14 @@ EXPORTS = {
 @api_view(["GET"])
 @permission_classes([IsTeam])
 def report_export(request, kind):
+    if kind == "revenue":
+        history = revenue.revenue_report(**_revenue_params(request))["history"]
+        out = csv.writer(_Echo())
+        lines = [out.writerow(["Month", "Status", "Recognized", "Scheduled", "Billed before tax", "Collected with tax", "Deferred at month end"])]
+        lines += [out.writerow([r["month"][:7], r["status"], r["recognized"], r["scheduled"], r["billed"], r["collected"], r["deferred_end"]]) for r in history]
+        response = StreamingHttpResponse(lines, content_type="text/csv")
+        response["Content-Disposition"] = 'attachment; filename="brightloop-revenue.csv"'
+        return response
     if kind not in EXPORTS:
         raise serializers.ValidationError({"kind": ["Choose subscriptions, invoices or payments."]})
     queryset, date_field, header, row = EXPORTS[kind]

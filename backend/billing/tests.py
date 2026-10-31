@@ -3,20 +3,23 @@ from decimal import Decimal
 from unittest.mock import patch
 
 from django.core import mail
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient
 
 from accounts.models import User
-from billing import notify, services
+from billing import notify, revenue, services
 from billing.models import Invoice, Payment, Subscription
 from catalog.models import Discount, PaymentTerm, Plan, Product, ProductVariant, Tax
+from config.api import Conflict
 
 PASSWORD = "Strong@Pass1"
 
 
 class Base(TestCase):
     def setUp(self):
+        cache.clear()  # request throttles are counted in the cache, and must not carry over between tests
         self.today = timezone.localdate()
         self.admin = User.objects.create_user("admin@x.example", PASSWORD, role="admin")
         self.staff = User.objects.create_user("staff@x.example", PASSWORD, role="staff")
@@ -656,8 +659,48 @@ class GrowthFeatureTests(Base):
         self.assertEqual(sub.plan, self.big)
         self.assertEqual(sub.recurring_total, Decimal("950.00"))
 
-    def test_downgrade_gives_credit_used_on_next_invoice(self):
+    def paid(self, plan=None):
+        sub = self.billed(plan)
+        for invoice in Invoice.objects.filter(subscription=sub):
+            services.confirm_invoice(invoice.pk)
+            services.record_payment(invoice.pk, "cash", invoice.total, self.today, "", self.admin)
+        return sub
+
+    def test_upgrade_downgrade_loop_cannot_mint_credit(self):
+        sub = self.paid()
+        services.change_plan(sub.pk, self.big)
+        with self.assertRaises(Conflict):
+            services.change_plan(sub.pk, self.small)
+        sub.refresh_from_db()
+        self.assertEqual(sub.credit_balance, Decimal("0.00"))
+
+    def test_no_credit_on_an_unpaid_period(self):
         sub = self.billed(self.big)
+        services.change_plan(sub.pk, self.small)
+        sub.refresh_from_db()
+        self.assertEqual(sub.plan, self.small)
+        self.assertEqual(sub.credit_balance, Decimal("0.00"))
+
+    def test_trial_cannot_be_retaken_after_a_plan_change(self):
+        first = Subscription.objects.get(pk=self.start(self.free).data["id"])
+        with self.assertRaises(Conflict):
+            services.change_plan(first.pk, self.small)
+        Subscription.objects.filter(pk=first.pk).update(trial_ends=self.today - timedelta(days=1), next_invoice_date=self.today)
+        services.change_plan(first.pk, self.small)
+        self.assertIsNone(Subscription.objects.get(pk=self.start(self.free).data["id"]).trial_ends)
+
+    def test_customer_cannot_leave_a_committed_plan(self):
+        fixed = Plan.objects.create(name="Fixed", price=Decimal("500"), billing_period="monthly", start_date=self.small.start_date, is_public=True, closable=False)
+        team_plan = self.billed(self.hidden)
+        locked = self.billed(fixed)
+        body = {"plan": self.small.pk}
+        self.assertEqual(self.api(self.cust).post(f"/api/subscriptions/{locked.pk}/change_plan/", body, format="json").status_code, 403)
+        self.assertEqual(self.api(self.cust).post(f"/api/subscriptions/{team_plan.pk}/change_plan/", body, format="json").status_code, 403)
+        self.assertNotIn("change_plan", self.api(self.cust).get(f"/api/subscriptions/{locked.pk}/").data["allowed_actions"])
+        self.assertEqual(self.api(self.staff).post(f"/api/subscriptions/{locked.pk}/change_plan/", body, format="json").status_code, 200)
+
+    def test_downgrade_gives_credit_used_on_next_invoice(self):
+        sub = self.paid(self.big)
         services.change_plan(sub.pk, self.small)
         sub.refresh_from_db()
         self.assertEqual(sub.credit_balance, Decimal("600.00"))
@@ -669,7 +712,7 @@ class GrowthFeatureTests(Base):
         self.assertEqual(sub.credit_balance, Decimal("250.00"))
 
     def test_cancelling_invoice_returns_credit(self):
-        sub = self.billed(self.big)
+        sub = self.paid(self.big)
         services.change_plan(sub.pk, self.small)
         following = services.bill_subscription(sub.pk, Subscription.objects.get(pk=sub.pk).next_invoice_date)[0]
         services.cancel_invoice(following.pk)
@@ -766,3 +809,87 @@ class GrowthFeatureTests(Base):
         self.assertEqual(data["mrr_by_plan"][0]["plan"], "Monthly")
         self.assertEqual(data["average_revenue_per_customer"], Decimal("200.00"))
         self.assertGreater(sum(row["amount"] for row in data["overdue_aging"]), 0)
+
+
+class RevenueRecognitionTests(Base):
+    def issued(self, start, end, subtotal="3100.00", discount="0.00", tax="558.00", total=None, state="confirmed"):
+        sub = self.sub(quantity=2)
+        subtotal, discount, tax = Decimal(subtotal), Decimal(discount), Decimal(tax)
+        return Invoice.objects.create(
+            subscription=sub, customer=self.cust, customer_name="C1", customer_email="c1@x.example", state=state,
+            invoice_date=start, due_date=end, period_start=start, period_end=end, billing_key=f"t:{sub.pk}",
+            subtotal=subtotal, discount_total=discount, tax_total=tax, total=total or subtotal - discount + tax,
+        )
+
+    def test_earned_evenly_per_day_across_months(self):
+        invoice = self.issued(date(2026, 1, 17), date(2026, 2, 15))  # 15 days in January, 15 in February
+        rows = revenue.invoice_schedule(invoice, today=date(2026, 3, 1))
+        self.assertEqual([r["recognized"] for r in rows], [Decimal("1550.00"), Decimal("1550.00")])
+        self.assertEqual([r["month"] for r in rows], ["2026-01-01", "2026-02-01"])
+
+    def test_part_earned_invoice_splits_recognized_and_scheduled(self):
+        invoice = self.issued(date(2026, 1, 1), date(2026, 1, 31))
+        row = revenue.invoice_schedule(invoice, today=date(2026, 1, 10))[0]
+        self.assertEqual(row["recognized"], Decimal("1000.00"))
+        self.assertEqual(row["scheduled"], Decimal("2100.00"))
+
+    def test_months_always_add_up_to_exactly_what_was_billed(self):
+        invoice = self.issued(date(2026, 1, 31), date(2027, 1, 30), subtotal="1000.01", tax="0.00")
+        rows = revenue.invoice_schedule(invoice, today=date(2026, 6, 15))
+        self.assertEqual(len(rows), 13)
+        self.assertEqual(sum(r["recognized"] + r["scheduled"] for r in rows), Decimal("1000.01"))
+
+    def test_tax_is_left_out_and_discount_lowers_revenue(self):
+        self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", discount="100.00", tax="162.00")
+        report = revenue.revenue_report(today=date(2026, 2, 1))
+        self.assertEqual(report["summary"]["recognized_to_date"], Decimal("900.00"))
+
+    def test_credit_lowers_revenue_in_proportion(self):
+        self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", tax="180.00", total=Decimal("590.00"))
+        report = revenue.revenue_report(today=date(2026, 2, 1))
+        self.assertEqual(report["summary"]["recognized_to_date"], Decimal("500.00"))
+
+    def test_draft_and_cancelled_are_not_revenue(self):
+        self.issued(date(2026, 1, 1), date(2026, 1, 31), state="draft")
+        self.issued(date(2026, 1, 1), date(2026, 1, 31), state="cancelled")
+        self.assertEqual(revenue.revenue_report(today=date(2026, 2, 1))["summary"]["billed_to_date"], Decimal("0.00"))
+
+    def test_deferred_is_billed_but_not_yet_earned(self):
+        self.issued(date(2026, 1, 1), date(2026, 3, 31), subtotal="9000.00", tax="0.00")  # 90 days
+        report = revenue.revenue_report(start=date(2026, 1, 1), end=date(2026, 4, 1), today=date(2026, 1, 31))
+        self.assertEqual(report["summary"]["recognized_to_date"], Decimal("3100.00"))
+        self.assertEqual(report["summary"]["deferred"], Decimal("5900.00"))
+        months = {row["month"]: row for row in report["history"]}
+        self.assertEqual(months["2026-01-01"]["status"], "current")
+        self.assertEqual(months["2026-01-01"]["deferred_end"], Decimal("5900.00"))
+        self.assertEqual(months["2026-01-01"]["billed"], Decimal("9000.00"))
+        self.assertEqual(months["2026-02-01"]["status"], "scheduled")
+        self.assertEqual(months["2026-02-01"]["scheduled"], Decimal("2800.00"))
+        self.assertEqual(months["2026-03-01"]["deferred_end"], Decimal("0.00"))
+
+    def test_filters_and_breakdowns(self):
+        invoice = self.issued(date(2026, 1, 1), date(2026, 1, 31), subtotal="1000.00", tax="0.00")
+        other = Plan.objects.create(name="Other", price=Decimal("1"), billing_period="yearly", start_date=date(2020, 1, 1))
+        window = {"start": date(2026, 1, 1), "end": date(2026, 2, 1), "today": date(2026, 3, 1)}
+        report = revenue.revenue_report(**window)
+        self.assertEqual(report["by_plan"], [{"name": "Monthly", "amount": Decimal("1000.00"), "share": 100.0}])
+        self.assertEqual(report["by_period"][0]["name"], "monthly")
+        self.assertEqual(report["top_customers"][0]["name"], invoice.customer_name)
+        self.assertEqual(revenue.revenue_report(plan=other.pk, **window)["by_plan"], [])
+        self.assertEqual(revenue.revenue_report(period="yearly", **window)["summary"]["billed_to_date"], Decimal("0.00"))
+
+    def test_api_is_team_only_and_checks_input(self):
+        self.assertEqual(self.api(self.cust).get("/api/reports/revenue/").status_code, 403)
+        self.assertEqual(self.api(self.staff).get("/api/reports/revenue/").status_code, 200)
+        client = self.api(self.admin)
+        self.assertEqual(client.get("/api/reports/revenue/?from=2026-05-01&to=2026-01-01").status_code, 400)
+        self.assertEqual(client.get("/api/reports/revenue/?period=hourly").status_code, 400)
+        self.assertEqual(client.get("/api/reports/revenue/?plan=x").status_code, 400)
+        self.assertEqual(self.api(self.cust).get("/api/reports/export/revenue/").status_code, 403)
+        self.assertIn(b"Recognized", b"".join(client.get("/api/reports/export/revenue/").streaming_content))
+
+    def test_invoice_schedule_is_team_only(self):
+        invoice = self.issued(date(2026, 1, 1), date(2026, 1, 31))
+        self.assertEqual(self.api(self.cust).get(f"/api/invoices/{invoice.pk}/recognition/").status_code, 403)
+        self.assertEqual(len(self.api(self.staff).get(f"/api/invoices/{invoice.pk}/recognition/").data), 1)
+

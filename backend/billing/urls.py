@@ -12,6 +12,7 @@ urlpatterns = router.urls + [
     path("billing/reminders/", views.send_reminders),
     path("webhooks/stripe/", views.stripe_webhook),
     path("reports/summary/", views.report_summary),
+    path("reports/revenue/", views.revenue_summary),
     path("reports/export/<str:kind>/", views.report_export),
     path("public/plans/", views.public_plans),
 ]

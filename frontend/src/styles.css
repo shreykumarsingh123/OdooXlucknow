@@ -194,6 +194,16 @@ a.tile:hover { border-color: var(--brand); text-decoration: none; transform: tra
 .totals dd { margin: 0; font-variant-numeric: tabular-nums; }
 .totals .grand { font-weight: 700; border-top: 1px solid var(--line); color: var(--ink); font-size: 1.04rem; }
 
+.bar-stack { width: min(36px, 70%); height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 2px; }
+.bar-stack .bar { width: 100%; border-radius: 0; }
+.bar-stack .bar:first-child { border-radius: 4px 4px 0 0; }
+.bar.later, .swatch.later { background: repeating-linear-gradient(135deg, #c9bdfb 0 3px, #e6e0fd 3px 6px); }
+.bar-slot:hover .bar.later, .bar-slot:focus-visible .bar.later { background: repeating-linear-gradient(135deg, #a892ff 0 3px, #d5ccfc 3px 6px); }
+.share th, .share td { padding-inline: 12px; }
+.share td:first-child { white-space: normal; }
+.legend { display: flex; gap: 14px; font-size: .84rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 6px; }
+.swatch { width: 12px; height: 12px; border-radius: 3px; background: var(--brand); }
 .page-in { animation: rise .32s cubic-bezier(.2, .8, .2, 1); }
 .auth-panel .inner { animation: rise .4s cubic-bezier(.2, .8, .2, 1); }
 .auth-hero .brand:hover { text-decoration: none; }

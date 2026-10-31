@@ -23,7 +23,8 @@ def subscription_actions(sub, user):
         elif sub.state == S.CONFIRMED:
             actions.append("activate")
     if sub.state == S.ACTIVE:
-        actions.append("change_plan")
+        if user.is_team or (plan.is_public and plan.closable):
+            actions.append("change_plan")
         if plan.pausable:
             actions.append("pause")
         if plan.renewable:
