@@ -1,8 +1,11 @@
+import os
 import random
 from datetime import timedelta
 from decimal import Decimal
 
 from django.conf import settings
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError
 from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
@@ -12,7 +15,7 @@ from billing.models import Invoice, Payment, PaymentRequest, SalesTarget, Subscr
 from catalog.models import Discount, PaymentTerm, Plan, Product, ProductVariant, QuotationTemplate, QuotationTemplateLine, Tax
 from support.models import AdminMessage, TeamMessage, Ticket, TicketMessage
 
-DEMO_PASSWORD = "Brightloop@123"  # first password only; the command refuses to run outside DEBUG
+DEMO_PASSWORD = "Brightloop@123"  # for local development only; a live site must set SEED_PASSWORD
 
 
 class Command(BaseCommand):
@@ -20,10 +23,22 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument("--volume", type=int, default=0)
+        parser.add_argument("--if-empty", action="store_true", help="Do nothing when data already exists, so this can run at every start.")
 
     def handle(self, *args, **options):
+        if options["if_empty"] and Business.objects.exists():
+            return
+        # The default password is in this public repository, so it must never open a live site.
+        self.password = os.environ.get("SEED_PASSWORD") or (DEMO_PASSWORD if settings.DEBUG else None)
+        if self.password is None:
+            raise CommandError("Set SEED_PASSWORD when DEBUG is false.")
         if not settings.DEBUG:
-            raise CommandError("seed_demo only runs when DEBUG is true.")
+            if self.password == DEMO_PASSWORD:
+                raise CommandError("Choose a SEED_PASSWORD other than the one in the repository.")
+            try:
+                validate_password(self.password)
+            except ValidationError as exc:
+                raise CommandError(f"SEED_PASSWORD is too weak: {' '.join(exc.messages)}")
         self.today = timezone.localdate()
         self.start = self.today - timedelta(days=400)
         if Business.objects.exists():
@@ -33,11 +48,11 @@ class Command(BaseCommand):
         self.sunrise()
         if options["volume"]:
             self.volume(manbhwan, options["volume"])
-        self.stdout.write(self.style.SUCCESS(f"Seeded. First logins use the password {DEMO_PASSWORD}"))
+        self.stdout.write(self.style.SUCCESS("Seeded."))
 
     def person(self, email, role, business, **extra):
         # No recovery address here. Each person enters their own real one at first login.
-        return User.objects.create_user(email, DEMO_PASSWORD, role=role, business=business, **extra)
+        return User.objects.create_user(email, self.password, role=role, business=business, **extra)
 
     def basics(self, business):
         gst = Tax.objects.create(business=business, name="GST 18%", rate=Decimal("18"))
@@ -89,7 +104,7 @@ class Command(BaseCommand):
     def brightloop(self):
         """Brightloop is a business too. Its plans are what other businesses pay for."""
         self.platform = Business.objects.create(name="Brightloop", is_platform=True, code="brloop")
-        self.asha = User.objects.create_superuser("asha@admin.com", DEMO_PASSWORD, first_name="Asha", last_name="Admin")
+        self.asha = User.objects.create_superuser("asha@admin.com", self.password, first_name="Asha", last_name="Admin")
         self.person("ravi@adminsale.com", User.Role.STAFF, self.platform, department="sales", first_name="Ravi", last_name="Rao")
         self.person("neha@support.com", User.Role.STAFF, self.platform, department="support", first_name="Neha", last_name="Nair")
         gst, terms = self.basics(self.platform)

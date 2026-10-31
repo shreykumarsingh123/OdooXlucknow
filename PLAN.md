@@ -115,7 +115,7 @@ Every list and report starts from one business, so composite indexes lead with `
 | `TWILIO_FROM_NUMBER` | SMS stays off without a sender number. |
 | `GOOGLE_CLIENT_ID` | The Google button stays hidden until it is set. |
 | `STRIPE_WEBHOOK_SECRET` | Without it, a payment is recorded only when the customer returns to the site. |
-| Hosting | The app runs locally. A public URL needs a hosting account. |
+| Hosting | The repo is ready for free hosting. Follow [docs/DEPLOY.md](docs/DEPLOY.md), which needs your Render, Aiven and Brevo accounts. |
 
 ## Not doing
 

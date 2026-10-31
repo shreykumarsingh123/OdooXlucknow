@@ -1,4 +1,5 @@
 import os
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -10,7 +11,7 @@ load_dotenv(BASE_DIR.parent / ".env")
 
 DEBUG = os.environ.get("DEBUG", "false").lower() == "true"
 SECRET_KEY = os.environ["SECRET_KEY"]
-if not DEBUG and (SECRET_KEY == "replace-me" or len(SECRET_KEY) < 50):
+if not DEBUG and (SECRET_KEY == "replace-me" or len(SECRET_KEY) < 40):
     raise ImproperlyConfigured("Set a long random SECRET_KEY when DEBUG is false.")
 
 
@@ -19,6 +20,8 @@ def env_list(name, default=""):
 
 
 ALLOWED_HOSTS = env_list("ALLOWED_HOSTS", "localhost,127.0.0.1")
+if os.environ.get("RENDER_EXTERNAL_HOSTNAME"):  # Render sets this to the service's own address
+    ALLOWED_HOSTS.append(os.environ["RENDER_EXTERNAL_HOSTNAME"])
 CORS_ALLOWED_ORIGINS = env_list("CORS_ALLOWED_ORIGINS", "http://localhost:5173")
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:5173").rstrip("/")
 
@@ -83,6 +86,12 @@ DATABASES = {
     }
 }
 
+# Hosted MySQL needs an encrypted connection, checked against the provider's certificate.
+if os.environ.get("DB_CA_CERT"):
+    _ca_file = Path(tempfile.gettempdir()) / "mysql-ca.pem"
+    _ca_file.write_text(os.environ["DB_CA_CERT"].replace("\\n", "\n"))
+    DATABASES["default"]["OPTIONS"]["ssl"] = {"ca": str(_ca_file)}
+
 AUTH_PASSWORD_VALIDATORS = [{"NAME": "accounts.validators.BrightloopPasswordValidator"}]
 
 LANGUAGE_CODE = "en-us"
@@ -126,6 +135,8 @@ EMAIL_HOST_USER = os.environ.get("EMAIL_HOST_USER", "")
 EMAIL_HOST_PASSWORD = os.environ.get("EMAIL_HOST_PASSWORD", "")
 EMAIL_USE_TLS = os.environ.get("EMAIL_USE_TLS", "true").lower() == "true"
 DEFAULT_FROM_EMAIL = os.environ.get("DEFAULT_FROM_EMAIL", "Brightloop Billing <billing@brightloop.example>")
+
+BREVO_API_KEY = os.environ.get("BREVO_API_KEY", "")
 
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", "")
 

@@ -1,8 +1,12 @@
+import os
 from datetime import timedelta
 from decimal import Decimal
+from io import StringIO
+from unittest.mock import patch
 
 from django.core import mail
 from django.core.cache import cache
+from django.core.management import CommandError, call_command
 from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.utils import timezone
@@ -430,3 +434,40 @@ class SiteTests(Setup):
             self.assertEqual(self.subscribe(email=email).status_code, 409, email)
         self.assertFalse(Subscription.objects.filter(customer=self.cust_a).exists())
         Product.objects.create(business=self.a, name="Keep", sales_price=1)
+
+
+class DeploymentTests(TestCase):
+    def seed(self, **options):
+        call_command("seed_demo", stdout=StringIO(), **options)
+
+    @override_settings(DEBUG=False)
+    def test_live_seed_refuses_missing_public_or_weak_password(self):
+        for value in (None, "Brightloop@123", "weak"):
+            env = {} if value is None else {"SEED_PASSWORD": value}
+            with patch.dict(os.environ, env), self.assertRaises(CommandError):
+                os.environ.pop("SEED_PASSWORD", None) if value is None else None
+                self.seed()
+        self.assertFalse(Business.objects.exists())
+
+    @override_settings(DEBUG=False)
+    def test_live_seed_uses_the_given_password_and_runs_once(self):
+        with patch.dict(os.environ, {"SEED_PASSWORD": "Fresh@Secret9"}):
+            self.seed(if_empty=True)
+            users = User.objects.count()
+            self.seed(if_empty=True)
+        self.assertEqual(User.objects.count(), users)
+        root = User.objects.get(email="asha@admin.com")
+        self.assertTrue(root.check_password("Fresh@Secret9"))
+        self.assertFalse(root.check_password("Brightloop@123"))
+
+    @override_settings(EMAIL_BACKEND="config.email.BrevoEmailBackend", BREVO_API_KEY="test-key")
+    def test_email_goes_through_brevo(self):
+        with patch("config.email.requests.post") as post:
+            sent = mail.send_mail("Hello", "Body", "Brightloop <me@gmail.com>", ["you@example.com"])
+        self.assertEqual(sent, 1)
+        body = post.call_args.kwargs["json"]
+        self.assertEqual(body["sender"], {"email": "me@gmail.com", "name": "Brightloop"})
+        self.assertEqual(body["to"], [{"email": "you@example.com"}])
+        self.assertEqual(body["textContent"], "Body")
+        self.assertEqual(post.call_args.kwargs["headers"]["api-key"], "test-key")
+
