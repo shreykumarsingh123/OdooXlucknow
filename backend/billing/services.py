@@ -240,8 +240,11 @@ def toggle_addon(subscription_id, line_id, enabled):
     line = sub.lines.select_related("product").filter(pk=line_id).first()
     if line is None or line.is_plan_fee or line.product.type != "addon":
         raise Conflict("Only add-on lines can be switched on or off.")
-    line.is_enabled = bool(enabled)
-    line.save(update_fields=["is_enabled"])
+    enabled = enabled is True
+    if enabled and not line.is_enabled:
+        line.billable_pending = True
+    line.is_enabled = enabled
+    line.save(update_fields=["is_enabled", "billable_pending"])
     refresh_totals(sub)
     return sub
 
@@ -276,7 +279,7 @@ def _price_lines(sub, day):
     """Work out each line, then apply discounts and tax. Returns (rows, applied discounts)."""
     rows = []
     for line in sub.lines.select_related("product").prefetch_related("taxes"):
-        if line.is_enabled:
+        if line.is_enabled or line.billable_pending:
             rows.append({"line": line, "base": money(line.amount), "discount": ZERO})
     if not rows:
         return [], []
@@ -362,6 +365,7 @@ def _create_invoice(sub, period_start, day):
         )
         for r in rows
     )
+    sub.lines.filter(billable_pending=True).update(billable_pending=False)
     for discount, amount in applied:
         InvoiceDiscount.objects.create(invoice=invoice, discount=discount, name=discount.name, amount=amount)
         Discount.objects.filter(pk=discount.pk).update(times_used=F("times_used") + 1)

@@ -34,6 +34,8 @@ class User(AbstractUser):
     company = models.CharField(max_length=150, blank=True)
     phone = models.CharField(max_length=30, blank=True)
     address = models.TextField(blank=True)
+    # True once the owner has proved control of the mailbox, by a reset link or Google.
+    email_verified = models.BooleanField(default=False)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = []

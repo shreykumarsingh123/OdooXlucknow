@@ -52,6 +52,8 @@ class SubscriptionLine(models.Model):
     unit_price = models.DecimalField(max_digits=12, decimal_places=2)
     taxes = models.ManyToManyField(Tax, blank=True)
     is_enabled = models.BooleanField(default=True)
+    # Switched on since the last invoice, so it is billed even if switched off again before billing day.
+    billable_pending = models.BooleanField(default=False)
 
     class Meta:
         ordering = ["id"]

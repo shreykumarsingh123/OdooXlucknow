@@ -214,6 +214,21 @@ class LifecycleTests(Base):
         Subscription.objects.filter(pk=sub.pk).update(quotation_valid_until=self.today - timedelta(days=1))
         self.assertEqual(self.api(self.staff).post(f"/api/subscriptions/{sub.pk}/confirm/").status_code, 409)
 
+    def test_addon_cannot_dodge_billing_by_toggling(self):
+        sub = self.sub(rows=[{"product": self.product, "quantity": 2}, {"product": self.addon, "quantity": 1}])
+        line = sub.lines.get(product=self.addon)
+        services.toggle_addon(sub.pk, line.pk, False)
+        services.run_billing()
+        self.assertEqual(Invoice.objects.get(subscription=sub).subtotal, Decimal("200.00"))
+        # On after billing, off again before the next run: that period is still charged, once.
+        services.toggle_addon(sub.pk, line.pk, True)
+        services.toggle_addon(sub.pk, line.pk, False)
+        first = services.next_period_start(sub.start_date, "monthly", sub.start_date)
+        second = services.next_period_start(first, "monthly", sub.start_date)
+        created = services.bill_subscription(sub.pk, first)
+        self.assertEqual(created[0].subtotal, Decimal("250.00"))
+        self.assertEqual(services.bill_subscription(sub.pk, second)[0].subtotal, Decimal("200.00"))
+
     def test_addon_toggle_changes_next_invoice(self):
         sub = self.sub(rows=[{"product": self.product, "quantity": 2}, {"product": self.addon, "quantity": 1}])
         addon_line = sub.lines.get(product=self.addon)
@@ -531,7 +546,28 @@ class GoogleLoginTests(Base):
         self.assertEqual(user.role, "customer")
         self.assertFalse(user.has_usable_password())
 
+    def test_unverified_password_account_is_not_linked(self):
+        response = self.login({"email": "c1@x.example", "email_verified": True})
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("access", response.data)
+
+    def test_invited_account_without_password_is_linked(self):
+        invited = User.objects.create_user("inv@x.example", None)
+        self.assertEqual(self.login({"email": "inv@x.example", "email_verified": True}).status_code, 200)
+        invited.refresh_from_db()
+        self.assertTrue(invited.email_verified)
+
+    def test_password_change_ends_old_sessions(self):
+        client = self.api()
+        token = client.post("/api/auth/login/", {"email": "c1@x.example", "password": PASSWORD}, format="json").data["access"]
+        client.credentials(HTTP_AUTHORIZATION=f"Bearer {token}")
+        self.assertEqual(client.get("/api/auth/me/").status_code, 200)
+        self.cust.set_password("Another@Pass2")
+        self.cust.save()
+        self.assertEqual(client.get("/api/auth/me/").status_code, 401)
+
     def test_existing_user_keeps_role(self):
+        User.objects.filter(email="staff@x.example").update(email_verified=True)
         self.assertEqual(self.login({"email": "staff@x.example", "email_verified": True}).status_code, 200)
         self.assertEqual(User.objects.filter(email="staff@x.example", role="staff").count(), 1)
 

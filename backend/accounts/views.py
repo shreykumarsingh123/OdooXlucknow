@@ -65,8 +65,17 @@ class GoogleLoginView(PublicAuth, APIView):
         user = User.objects.filter(email__iexact=email).first()
         if user is None:
             user = User.objects.create_user(
-                email, None, first_name=claims.get("given_name", "")[:150], last_name=claims.get("family_name", "")[:150]
+                email, None, first_name=claims.get("given_name", "")[:150], last_name=claims.get("family_name", "")[:150],
+                email_verified=True,
             )
+        elif not user.email_verified:
+            # Anyone can sign up with someone else's email. Linking now would let that person keep a password on this account.
+            if user.has_usable_password():
+                raise serializers.ValidationError(
+                    {"credential": ["This email already has a password. Sign in with it, or use Forgot password, then try Google again."]}
+                )
+            user.email_verified = True
+            user.save(update_fields=["email_verified"])
         if not user.is_active:
             raise serializers.ValidationError({"credential": ["This account is deactivated."]})
         refresh = RefreshToken.for_user(user)
@@ -101,7 +110,8 @@ class ResetPasswordView(PublicAuth, APIView):
         except ValidationError as exc:
             raise serializers.ValidationError({"password": list(exc.messages)})
         user.set_password(password)
-        user.save(update_fields=["password"])
+        user.email_verified = True
+        user.save(update_fields=["password", "email_verified"])
         return Response({"message": "Password updated. You can sign in now."})
 
 
