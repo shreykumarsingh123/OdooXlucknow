@@ -173,6 +173,28 @@ class OtpTests(Setup):
         self.ask()
         self.assertEqual(self.reset(self.code()).status_code, 200)
 
+    def test_recovery_reset_does_not_verify_the_sign_in_address(self):
+        User.objects.filter(pk=self.cust_a.pk).update(recovery_email="attacker@example.com")
+        self.ask()
+        self.assertEqual(self.reset(self.code()).status_code, 200)
+        self.cust_a.refresh_from_db()
+        self.assertFalse(self.cust_a.email_verified)
+
+    def test_reset_through_the_sign_in_address_verifies_it(self):
+        self.ask()
+        self.assertEqual(self.reset(self.code()).status_code, 200)
+        self.cust_a.refresh_from_db()
+        self.assertTrue(self.cust_a.email_verified)
+
+    def test_work_address_without_recovery_gets_no_code(self):
+        User.objects.create_user("rohanaaa111@sale.com", PASSWORD, role="staff", department="sales", business=self.a)
+        answer = self.ask("rohanaaa111@sale.com")
+        self.assertEqual(answer.data, self.ask("nobody@gmail.com").data)
+        self.assertEqual(len(mail.outbox), 0)
+        User.objects.filter(email="rohanaaa111@sale.com").update(recovery_email="rohan@example.com")
+        self.ask("rohanaaa111@sale.com")
+        self.assertEqual(mail.outbox[-1].to, ["rohan@example.com"])
+
     def test_expired_code_refused(self):
         self.ask()
         PasswordOTP.objects.filter(user=self.cust_a).update(expires_at=timezone.now() - timedelta(minutes=1))

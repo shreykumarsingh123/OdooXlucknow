@@ -20,7 +20,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 
 from .emails import send_password_otp
-from .identity import classify, customers_of
+from .identity import WORK_DOMAINS, classify, customers_of
 from .models import Business, PasswordOTP, User
 from .permissions import IsAdmin, IsTeam
 from .serializers import MeSerializer, PersonSerializer, SignupSerializer, StaffSerializer
@@ -97,7 +97,8 @@ class ForgotPasswordView(PublicAuth, APIView):
         email = str(request.data.get("email", "")).strip().lower()
         user = User.objects.filter(email__iexact=email, is_active=True).first()
         body = {"message": "If this email has an account, a 6-digit code is on its way."}
-        if user:
+        # A work address such as name@sale.com may be a stranger's mailbox, so it never receives a code.
+        if user and (user.recovery_email or user.email.rpartition("@")[2] not in WORK_DOMAINS):
             code = self._issue(user)
             if code:
                 try:
@@ -156,7 +157,9 @@ class ResetPasswordView(PublicAuth, APIView):
         except ValidationError as exc:
             raise serializers.ValidationError({"password": list(exc.messages)})
         user.set_password(password)
-        user.email_verified = True
+        # A code sent to a recovery address proves nothing about the sign-in address, and Google trusts this flag.
+        if not user.recovery_email:
+            user.email_verified = True
         user.save(update_fields=["password", "email_verified"])
         row.delete()
         return Response({"message": "Password updated. You can sign in now."})
