@@ -1,0 +1,40 @@
+# Secrets and local config
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.claude/settings.local.json
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Django
+db.sqlite3
+media/
+staticfiles/
+
+# Node
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# Editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# App runtime
+sent_emails/
+.claude/launch.json
