@@ -4,44 +4,32 @@ Render runs the API and the website. Aiven provides MySQL. Brevo sends email, be
 
 ## 1. Database on Aiven
 
-1. Sign up at aiven.io and create a free MySQL service.
-2. Open the service and note the host, port, user and password. The database name is usually `defaultdb`.
-3. Download the CA certificate.
+Create a free MySQL service, and find its host, port, user, password, database name and CA certificate.
 
-## 2. Email on Brevo
+## 2. API and website on Render
 
-1. Sign up at brevo.com.
-2. Verify a sender address under Senders. Your own Gmail works.
-3. Create an API key under SMTP & API.
+1. Choose New, then Blueprint, and pick this repository.
+2. Enter only these six values, from Aiven: `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT`, and `DB_CA_CERT` (the whole certificate text).
+3. Deploy. Render makes `SECRET_KEY`, `SEED_PASSWORD` and `ADMIN_PASSWORD` by itself. The API creates its tables and starting data on first start.
 
-## 3. API and website on Render
+If Render changes a service name because it is taken, correct `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS` and `VITE_API_BASE_URL`, then redeploy both services.
 
-1. Sign up at render.com with GitHub, and allow it to read this repository.
-2. Choose New, then Blueprint, and pick this repository. Render reads `render.yaml`.
-3. Fill in the values it asks for:
+## 3. Check it
 
-| Name | Value |
-|------|-------|
-| `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | From Aiven |
-| `DB_CA_CERT` | The whole text of the CA certificate |
-| `SEED_PASSWORD` | A new strong password for the starting demo accounts. More than 8 characters, with upper case, lower case and a special character |
-| `ADMIN_PASSWORD` | A different strong password, only for `asha@admin.com`. Never share it with judges |
-| `BREVO_API_KEY` | From Brevo |
-| `DEFAULT_FROM_EMAIL` | Your verified Brevo sender |
-| `STRIPE_SECRET_KEY` | A newly created Stripe test key |
-| `VITE_API_BASE_URL` | `https://brightloop-api.onrender.com/api` |
-| `FRONTEND_URL` | `https://brightloop.onrender.com` |
-| `CORS_ALLOWED_ORIGINS` | `https://brightloop.onrender.com` |
+1. Open `https://brightloop-api-shrey.onrender.com/api/health/` and wait for `{"status": "ok"}`.
+2. In Render, open `brightloop-api-shrey`, then Environment, and copy `ADMIN_PASSWORD` and `SEED_PASSWORD`.
+3. Open `https://brightloop-shrey.onrender.com` and sign in as `asha@admin.com` with `ADMIN_PASSWORD`. Demo accounts use `SEED_PASSWORD`.
 
-4. Deploy. Render may add letters to a name that is taken. If it does, correct the last three values with the real addresses, then redeploy both services.
+## 4. Optional, later
 
-The API creates its tables and starting data on its first start.
+Add these under Environment on `brightloop-api-shrey`.
 
-## 4. Check it
+| Feature | Values |
+|---------|--------|
+| Password codes by email, using Brevo | `EMAIL_BACKEND` = `config.email.BrevoEmailBackend`, `BREVO_API_KEY`, and `DEFAULT_FROM_EMAIL` set to your verified Brevo sender |
+| Card payments | `STRIPE_SECRET_KEY`, a newly created Stripe test key |
 
-1. Open `https://brightloop-api.onrender.com/api/health/` and wait for `{"status": "ok"}`.
-2. Open the website and sign in as `asha@admin.com` with your `ADMIN_PASSWORD`.
-3. Sign in as each kind of account, and try Forgot password with a real recovery address.
+Without email, Forgot password cannot reach anyone on the live site, and the code is never shown on screen there. Without Stripe, the Pay by card button stays hidden.
 
 ## Limits of the free plans
 

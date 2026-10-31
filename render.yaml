@@ -1,7 +1,8 @@
 # Render reads this when you create a Blueprint. Values marked sync: false are typed into Render, never committed.
+# Email and Stripe are added later in the dashboard. See docs/DEPLOY.md.
 services:
   - type: web
-    name: brightloop-api
+    name: brightloop-api-shrey
     runtime: docker
     plan: free
     dockerfilePath: ./backend/Dockerfile
@@ -28,24 +29,16 @@ services:
       - key: DB_CA_CERT
         sync: false
       - key: SEED_PASSWORD
-        sync: false
+        generateValue: true
       - key: ADMIN_PASSWORD
-        sync: false
+        generateValue: true
       - key: FRONTEND_URL
-        sync: false
+        value: https://brightloop-shrey.onrender.com
       - key: CORS_ALLOWED_ORIGINS
-        sync: false
-      - key: EMAIL_BACKEND
-        value: config.email.BrevoEmailBackend
-      - key: BREVO_API_KEY
-        sync: false
-      - key: DEFAULT_FROM_EMAIL
-        sync: false
-      - key: STRIPE_SECRET_KEY
-        sync: false
+        value: https://brightloop-shrey.onrender.com
 
   - type: web
-    name: brightloop
+    name: brightloop-shrey
     runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
@@ -56,4 +49,4 @@ services:
         destination: /index.html
     envVars:
       - key: VITE_API_BASE_URL
-        sync: false
+        value: https://brightloop-api-shrey.onrender.com/api
