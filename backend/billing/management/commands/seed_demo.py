@@ -32,13 +32,18 @@ class Command(BaseCommand):
         self.password = os.environ.get("SEED_PASSWORD") or (DEMO_PASSWORD if settings.DEBUG else None)
         if self.password is None:
             raise CommandError("Set SEED_PASSWORD when DEBUG is false.")
+        # Demo logins get shared with judges and teammates. That must never hand over the administrator too.
+        self.admin_password = os.environ.get("ADMIN_PASSWORD") or (self.password if settings.DEBUG else None)
         if not settings.DEBUG:
-            if self.password == DEMO_PASSWORD:
-                raise CommandError("Choose a SEED_PASSWORD other than the one in the repository.")
-            try:
-                validate_password(self.password)
-            except ValidationError as exc:
-                raise CommandError(f"SEED_PASSWORD is too weak: {' '.join(exc.messages)}")
+            if not self.admin_password or self.admin_password == self.password:
+                raise CommandError("Set an ADMIN_PASSWORD different from SEED_PASSWORD when DEBUG is false.")
+            for name, value in (("SEED_PASSWORD", self.password), ("ADMIN_PASSWORD", self.admin_password)):
+                if value == DEMO_PASSWORD:
+                    raise CommandError(f"Choose a {name} other than the one in the repository.")
+                try:
+                    validate_password(value)
+                except ValidationError as exc:
+                    raise CommandError(f"{name} is too weak: {' '.join(exc.messages)}")
         self.today = timezone.localdate()
         self.start = self.today - timedelta(days=400)
         if Business.objects.exists():
@@ -104,7 +109,7 @@ class Command(BaseCommand):
     def brightloop(self):
         """Brightloop is a business too. Its plans are what other businesses pay for."""
         self.platform = Business.objects.create(name="Brightloop", is_platform=True, code="brloop")
-        self.asha = User.objects.create_superuser("asha@admin.com", self.password, first_name="Asha", last_name="Admin")
+        self.asha = User.objects.create_superuser("asha@admin.com", self.admin_password, first_name="Asha", last_name="Admin")
         self.person("ravi@adminsale.com", User.Role.STAFF, self.platform, department="sales", first_name="Ravi", last_name="Rao")
         self.person("neha@support.com", User.Role.STAFF, self.platform, department="support", first_name="Neha", last_name="Nair")
         gst, terms = self.basics(self.platform)

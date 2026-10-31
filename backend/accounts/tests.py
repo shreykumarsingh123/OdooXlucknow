@@ -442,23 +442,24 @@ class DeploymentTests(TestCase):
 
     @override_settings(DEBUG=False)
     def test_live_seed_refuses_missing_public_or_weak_password(self):
-        for value in (None, "Brightloop@123", "weak"):
-            env = {} if value is None else {"SEED_PASSWORD": value}
-            with patch.dict(os.environ, env), self.assertRaises(CommandError):
-                os.environ.pop("SEED_PASSWORD", None) if value is None else None
+        admin = "Admin@Secret7"
+        for seed, root in ((None, admin), ("Brightloop@123", admin), ("weak", admin), ("Fresh@Secret9", None), ("Fresh@Secret9", "Fresh@Secret9"), ("Fresh@Secret9", "Brightloop@123")):
+            env = {k: v for k, v in {"SEED_PASSWORD": seed, "ADMIN_PASSWORD": root}.items() if v}
+            with patch.dict(os.environ, env, clear=True), self.assertRaises(CommandError):
                 self.seed()
         self.assertFalse(Business.objects.exists())
 
     @override_settings(DEBUG=False)
     def test_live_seed_uses_the_given_password_and_runs_once(self):
-        with patch.dict(os.environ, {"SEED_PASSWORD": "Fresh@Secret9"}):
+        with patch.dict(os.environ, {"SEED_PASSWORD": "Fresh@Secret9", "ADMIN_PASSWORD": "Admin@Secret7"}):
             self.seed(if_empty=True)
             users = User.objects.count()
             self.seed(if_empty=True)
         self.assertEqual(User.objects.count(), users)
         root = User.objects.get(email="asha@admin.com")
-        self.assertTrue(root.check_password("Fresh@Secret9"))
-        self.assertFalse(root.check_password("Brightloop@123"))
+        self.assertTrue(root.check_password("Admin@Secret7"))
+        self.assertFalse(root.check_password("Fresh@Secret9"))
+        self.assertTrue(User.objects.get(email="manbhwan@gmail.com").check_password("Fresh@Secret9"))
 
     @override_settings(EMAIL_BACKEND="config.email.BrevoEmailBackend", BREVO_API_KEY="test-key")
     def test_email_goes_through_brevo(self):

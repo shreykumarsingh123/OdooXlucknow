@@ -24,7 +24,8 @@ Render runs the API and the website. Aiven provides MySQL. Brevo sends email, be
 |------|-------|
 | `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_HOST`, `DB_PORT` | From Aiven |
 | `DB_CA_CERT` | The whole text of the CA certificate |
-| `SEED_PASSWORD` | A new strong password for the starting accounts. More than 8 characters, with upper case, lower case and a special character |
+| `SEED_PASSWORD` | A new strong password for the starting demo accounts. More than 8 characters, with upper case, lower case and a special character |
+| `ADMIN_PASSWORD` | A different strong password, only for `asha@admin.com`. Never share it with judges |
 | `BREVO_API_KEY` | From Brevo |
 | `DEFAULT_FROM_EMAIL` | Your verified Brevo sender |
 | `STRIPE_SECRET_KEY` | A newly created Stripe test key |
@@ -39,7 +40,7 @@ The API creates its tables and starting data on its first start.
 ## 4. Check it
 
 1. Open `https://brightloop-api.onrender.com/api/health/` and wait for `{"status": "ok"}`.
-2. Open the website and sign in as `asha@admin.com` with your `SEED_PASSWORD`.
+2. Open the website and sign in as `asha@admin.com` with your `ADMIN_PASSWORD`.
 3. Sign in as each kind of account, and try Forgot password with a real recovery address.
 
 ## Limits of the free plans
