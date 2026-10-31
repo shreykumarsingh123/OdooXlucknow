@@ -215,13 +215,10 @@ def site_subscribe(request, code):
     if plan is None or not plan.available_on(timezone.localdate()) or plan.min_quantity > 1 or plan.price <= 0:
         raise serializers.ValidationError({"plan": ["Choose one of the plans on this page."]})
     with transaction.atomic():
-        customer = User.objects.select_for_update().filter(email__iexact=email).first()
-        if customer is None:
-            customer = User.objects.create_user(email, None, first_name=name, role=User.Role.CUSTOMER, business=business)
-        elif customer.business_id != business.pk or customer.role != User.Role.CUSTOMER:
-            raise serializers.ValidationError({"email": ["This address cannot subscribe here. Please use another one."]})
-        if Subscription.objects.filter(customer=customer, plan=plan, state__in=[S.ACTIVE, S.PAUSED]).exists():
-            raise Conflict("You already have this plan.")
+        # This page has no login, so it must never add charges to an account that already exists.
+        if User.objects.filter(email__iexact=email).exists():
+            raise Conflict("This address already has an account. Please sign in to subscribe.")
+        customer = User.objects.create_user(email, None, first_name=name, role=User.Role.CUSTOMER, business=business)
         sub = services.provision(customer, plan, None, f"Subscribed on the {business.name} site")
     return Response({"number": sub.number, "plan": plan.name, "trial_ends": sub.trial_ends}, status=201)
 

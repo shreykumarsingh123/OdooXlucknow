@@ -400,8 +400,11 @@ class SiteTests(Setup):
     def test_site_rules(self):
         self.assertEqual(self.subscribe(email="a@yahoo.com").status_code, 400)
         self.assertEqual(self.subscribe(plan=self.plan_b.pk).status_code, 400)
-        self.assertEqual(self.subscribe(email="custb@gmail.com").status_code, 400)
-        self.assertEqual(self.subscribe(email="alpha@gmail.com").status_code, 400)
         self.assertEqual(self.subscribe().status_code, 201)
         self.assertEqual(self.subscribe().status_code, 409)
+
+    def test_site_cannot_charge_an_existing_account(self):
+        for email in ["custa@gmail.com", "custb@gmail.com", "alpha@gmail.com"]:
+            self.assertEqual(self.subscribe(email=email).status_code, 409, email)
+        self.assertFalse(Subscription.objects.filter(customer=self.cust_a).exists())
         Product.objects.create(business=self.a, name="Keep", sales_price=1)
