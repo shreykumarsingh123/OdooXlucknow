@@ -16,7 +16,7 @@ Brightloop is a subscription management platform for many businesses. Each busin
 | Sign-in | SimpleJWT, Google sign-in | Access tokens, and sign-in with a Google account |
 | Database | MySQL 8 | All data, with row locks and unique rules against double billing |
 | Payments | Stripe Checkout, test mode | Card payment of invoices |
-| Messages | Twilio | SMS reminders and email, once set up (see [Integrations](#integrations)) |
+| Messages | Brevo SMTP, Twilio | Email through Brevo, and SMS reminders through Twilio once set up (see [Integrations](#integrations)) |
 | Quality | Django tests, Ruff, GitHub Actions | Tests and lint on every push |
 
 ```mermaid
@@ -26,7 +26,8 @@ flowchart LR
   D --> S[Services: billing and business rules]
   S --> M[(MySQL 8)]
   S --> ST[Stripe Checkout]
-  S --> T[Twilio SMS and email]
+  S --> E[Brevo SMTP email]
+  S --> T[Twilio SMS]
   R --> G[Google sign-in]
   G -->|ID token| D
 ```
@@ -240,7 +241,7 @@ All use the local password in `backend/billing/management/commands/seed_demo.py`
 
 Manbhwan's public test site is at `/shop/mb7k2q`.
 
-These sample addresses may belong to real people. Replace them before turning on real email.
+These sample addresses may belong to real people. With real email on, invoices, reminders and password codes for them could reach strangers, so replace them with real addresses first.
 
 ## Integrations
 
@@ -248,7 +249,8 @@ Each is set in `.env`, and stays hidden or off until configured. See `.env.examp
 
 | Integration | Needs | Status without it |
 |-------------|-------|-------------------|
-| Email through Twilio | `EMAIL_BACKEND=config.email.TwilioEmailBackend`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`, and `DEFAULT_FROM_EMAIL` on a domain verified in Twilio | Emails are saved in `backend/sent_emails/`. With `DEBUG` on, the password code shows on screen |
+| Email through Brevo | `EMAIL_BACKEND=django.core.mail.backends.smtp.EmailBackend`, `EMAIL_HOST=smtp-relay.brevo.com`, `EMAIL_PORT=587`, `EMAIL_USE_TLS=true`, your Brevo login and SMTP key as `EMAIL_HOST_USER` and `EMAIL_HOST_PASSWORD`, and `DEFAULT_FROM_EMAIL` set to a verified Brevo sender | Emails are saved in `backend/sent_emails/`. With `DEBUG` on, the password code shows on screen |
+| Email through Twilio, instead of Brevo | `EMAIL_BACKEND=config.email.TwilioEmailBackend`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`, and `DEFAULT_FROM_EMAIL` on a domain verified in Twilio | Emails are saved in `backend/sent_emails/`. With `DEBUG` on, the password code shows on screen |
 | Stripe Checkout | `STRIPE_SECRET_KEY`. Add `STRIPE_WEBHOOK_SECRET` and an endpoint at `/api/webhooks/stripe/` to record payments if a customer never returns | The Pay by card button is hidden |
 | Twilio SMS | `TWILIO_ACCOUNT_SID`, `TWILIO_API_KEY_SID`, `TWILIO_API_KEY_SECRET`, `TWILIO_FROM_NUMBER` | Reminders go by email only |
 | Google sign-in | `GOOGLE_CLIENT_ID`, with `http://localhost:5173` as an authorised JavaScript origin | The Google button is hidden |
