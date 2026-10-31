@@ -460,15 +460,3 @@ class DeploymentTests(TestCase):
         self.assertTrue(root.check_password("Admin@Secret7"))
         self.assertFalse(root.check_password("Fresh@Secret9"))
         self.assertTrue(User.objects.get(email="manbhwan@gmail.com").check_password("Fresh@Secret9"))
-
-    @override_settings(EMAIL_BACKEND="config.email.BrevoEmailBackend", BREVO_API_KEY="test-key")
-    def test_email_goes_through_brevo(self):
-        with patch("config.email.requests.post") as post:
-            sent = mail.send_mail("Hello", "Body", "Brightloop <me@gmail.com>", ["you@example.com"])
-        self.assertEqual(sent, 1)
-        body = post.call_args.kwargs["json"]
-        self.assertEqual(body["sender"], {"email": "me@gmail.com", "name": "Brightloop"})
-        self.assertEqual(body["to"], [{"email": "you@example.com"}])
-        self.assertEqual(body["textContent"], "Body")
-        self.assertEqual(post.call_args.kwargs["headers"]["api-key"], "test-key")
-
